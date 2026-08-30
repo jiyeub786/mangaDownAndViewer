@@ -36,17 +36,16 @@ python -m uvicorn app.main:app --reload
 | 뷰어 세부 기능 설명 | [`docs/VIEWER_FEATURES.md`](docs/VIEWER_FEATURES.md) |
 | 변경 이력 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) |
 | 프로젝트 개요 | [`CLAUDE.md`](CLAUDE.md) |
-| 아키텍처/구현 세부사항 | [`아키텍처.md`](아키텍처.md) |
-| UI 디자인 시스템 원본 | [`design.md`](design.md) |
-| 알려진 문제·개선 아이디어 | [`개선사항.md`](개선사항.md) |
+| 아키텍처/구현 세부사항 | [`docs/아키텍처.md`](docs/아키텍처.md) |
+| UI 디자인 시스템 원본 | [`docs/design.md`](docs/design.md) |
+| 알려진 문제·개선 아이디어 | [`docs/개선사항.md`](docs/개선사항.md) |
 
 ## 구조
 
 ```
 app/            FastAPI 백엔드 (크롤러, 작업 큐, 뷰어/온라인 API)
 static/         프런트엔드 (바닐라 JS SPA, 프레임워크 없음)
-docs/           사용법 · 기능 · 변경 이력 문서
-design.md       UI가 따르는 디자인 시스템 원본
+docs/           사용법 · 기능 · 변경 이력 · 아키텍처 · 디자인 시스템 문서
 ```
 
 ## 제한사항

@@ -22,9 +22,9 @@
 | 사용법(설치~REST API) | [`docs/USAGE.md`](docs/USAGE.md) |
 | 뷰어 세부 기능 설명 | [`docs/VIEWER_FEATURES.md`](docs/VIEWER_FEATURES.md) |
 | 변경 이력 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) |
-| **아키텍처/구현 세부사항**(코드를 고치기 전에 볼 것) | [`아키텍처.md`](아키텍처.md) |
-| UI 디자인 시스템 원본 | [`design.md`](design.md) |
-| 알려진 문제·개선 아이디어 | [`개선사항.md`](개선사항.md) |
+| **아키텍처/구현 세부사항**(코드를 고치기 전에 볼 것) | [`docs/아키텍처.md`](docs/아키텍처.md) |
+| UI 디자인 시스템 원본 | [`docs/design.md`](docs/design.md) |
+| 알려진 문제·개선 아이디어 | [`docs/개선사항.md`](docs/개선사항.md) |
 
 ## 한눈에 보는 구조
 
@@ -32,12 +32,12 @@
 app/        FastAPI 백엔드 — main.py(라우트), jobs.py(다운로드 작업 큐),
             crawler.py(크롤링/다운로드), online.py(온라인 보기), library.py(뷰어 조회)
 static/     프런트엔드 — index.html, style.css, app.js (바닐라 JS, 프레임워크 없음)
-docs/       사용자 문서
+docs/       사용자 문서 · 아키텍처 · 디자인 시스템 원본
 downloads/  실행 시 생성되는 다운로드 결과물 (gitignore 대상)
 ```
 
 세부 책임 분담, 상태 관리 방식, 알아두면 좋은 구현상의 함정(gotcha)은
-[`아키텍처.md`](아키텍처.md)에 정리했다.
+[`docs/아키텍처.md`](docs/아키텍처.md)에 정리했다.
 
 ## 참고
 
