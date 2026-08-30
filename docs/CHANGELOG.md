@@ -1,7 +1,7 @@
 # Changelog
 
 이 파일은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 형식을 참고해
-MangaDL(FastAPI 웹 버전)에 추가/변경된 기능을 기록합니다. 버전 번호는 릴리스
+온라인만화뷰어(FastAPI 웹 버전)에 추가/변경된 기능을 기록합니다. 버전 번호는 릴리스
 태그가 아니라 기능 단위 마일스톤 구분용입니다.
 
 ## [0.7.0] - 2026-08-30

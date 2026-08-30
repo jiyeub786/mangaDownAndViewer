@@ -16,7 +16,7 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 DOWNLOAD_ROOT = jobs.DOWNLOAD_ROOT
 os.makedirs(DOWNLOAD_ROOT, exist_ok=True)
 
-app = FastAPI(title="MangaDL", description="만화 사이트 이미지 크롤러 웹 앱")
+app = FastAPI(title="온라인만화뷰어", description="만화 사이트 이미지 크롤러 웹 앱")
 
 
 @app.post("/api/jobs", response_model=JobStatus)
