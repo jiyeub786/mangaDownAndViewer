@@ -1432,8 +1432,7 @@ function renderOnlineEpisodeList() {
           .map(
             (ep) => `
               <button type="button" class="search-result-item" data-wr-id="${escapeAttr(ep.wr_id)}">
-                <div class="search-result-title">${escapeHtml(ep.title)}</div>
-                ${ep.date ? `<div class="search-result-tags">${escapeHtml(ep.date)}</div>` : ""}
+                <div class="search-result-title">${escapeHtml(ep.title)}${ep.date ? ` (${escapeHtml(ep.date)})` : ""}</div>
               </button>
             `
           )
@@ -1598,7 +1597,10 @@ function updateOnlineReaderChrome() {
   const activeId = onlineState.activeEpisodeId || onlineState.episodeId;
   const activeEp = onlineState.episodes.find((e) => e.wr_id === activeId);
   const titleEl = document.getElementById("online-reader-title-text");
-  if (titleEl) titleEl.textContent = `${onlineState.seriesTitle} · ${activeEp ? activeEp.title : activeId}`;
+  if (titleEl) {
+    const epLabel = activeEp ? `${activeEp.title}${activeEp.date ? ` (${activeEp.date})` : ""}` : activeId;
+    titleEl.textContent = `${onlineState.seriesTitle} · ${epLabel}`;
+  }
 
   // Newest-first listing: "다음 화" (chronologically forward) sits at a lower index,
   // "이전 화" (chronologically backward) sits at a higher index.
