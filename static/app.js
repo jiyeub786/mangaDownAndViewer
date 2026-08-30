@@ -240,6 +240,13 @@ tabButtons.forEach((btn) => {
     const tab = btn.getAttribute("data-tab");
     exitFullscreenIfActive();
     document.body.classList.remove("immersive");
+    // Leaving a reader mid-read via the tab switch (rather than its own back/library
+    // button) previously left its observers running and its `view` stuck at "reader" in
+    // the background — harmless on its own, but combined with opening the other
+    // reader it made both keydown listeners fire for one keypress. Tearing down here
+    // closes that off regardless of which reader (if any) is currently open.
+    if (tab !== "viewer") teardownReaderObservers();
+    if (tab !== "online") teardownOnlineReaderObservers();
     panelDownload.hidden = tab !== "download";
     panelViewer.hidden = tab !== "viewer";
     panelOnline.hidden = tab !== "online";
@@ -1127,7 +1134,7 @@ document.addEventListener("fullscreenchange", syncImmersiveWithFullscreen);
 document.addEventListener("webkitfullscreenchange", syncImmersiveWithFullscreen);
 
 document.addEventListener("keydown", (e) => {
-  if (viewerState.view !== "reader") return;
+  if (viewerState.view !== "reader" || panelViewer.hidden) return;
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
 
@@ -1563,9 +1570,11 @@ function updateOnlineReaderChrome() {
   const titleEl = document.getElementById("online-reader-title-text");
   if (titleEl) titleEl.textContent = `${onlineState.seriesTitle} · ${activeEp ? activeEp.title : activeId}`;
 
+  // Newest-first listing: "다음 화" (chronologically forward) sits at a lower index,
+  // "이전 화" (chronologically backward) sits at a higher index.
   const idx = onlineState.episodes.findIndex((e) => e.wr_id === activeId);
-  const prevEp = idx > 0 ? onlineState.episodes[idx - 1] : null;
-  const nextEp = idx >= 0 && idx < onlineState.episodes.length - 1 ? onlineState.episodes[idx + 1] : null;
+  const nextEp = idx > 0 ? onlineState.episodes[idx - 1] : null;
+  const prevEp = idx >= 0 && idx < onlineState.episodes.length - 1 ? onlineState.episodes[idx + 1] : null;
   const prevBtn = document.getElementById("online-reader-prev");
   const nextBtn = document.getElementById("online-reader-next");
   if (prevBtn) prevBtn.disabled = !prevEp;
@@ -1656,7 +1665,8 @@ async function onOnlineReachEnd(fromWrId) {
   if (onlineReaderRuntime.loadingNext || onlineReaderRuntime.noMoreEpisodes) return;
 
   const idx = onlineState.episodes.findIndex((e) => e.wr_id === fromWrId);
-  const nextEp = idx >= 0 && idx < onlineState.episodes.length - 1 ? onlineState.episodes[idx + 1] : null;
+  // Newest-first listing: the chronologically-next episode sits at a lower index.
+  const nextEp = idx > 0 ? onlineState.episodes[idx - 1] : null;
 
   if (!nextEp) {
     onlineReaderRuntime.noMoreEpisodes = true;
@@ -1788,15 +1798,17 @@ async function onlinePagerStep(direction) {
     return;
   }
 
+  // Newest-first listing: moving forward in story order (direction > 0) means walking
+  // to a LOWER array index, same reasoning as gotoOnlineRelativeEpisode/onOnlineReachEnd.
   const idx = onlineState.episodes.findIndex((e) => e.wr_id === episodeId);
   onlineReaderRuntime.paged.loading = true;
   try {
     if (direction > 0) {
-      if (idx === -1 || idx >= onlineState.episodes.length - 1) return;
-      await openOnlineEpisodePaged(onlineState.episodes[idx + 1].wr_id, { startIndex: 1 });
-    } else {
       if (idx <= 0) return;
-      await openOnlineEpisodePaged(onlineState.episodes[idx - 1].wr_id, { startAtEnd: true });
+      await openOnlineEpisodePaged(onlineState.episodes[idx - 1].wr_id, { startIndex: 1 });
+    } else {
+      if (idx === -1 || idx >= onlineState.episodes.length - 1) return;
+      await openOnlineEpisodePaged(onlineState.episodes[idx + 1].wr_id, { startAtEnd: true });
     }
   } finally {
     onlineReaderRuntime.paged.loading = false;
@@ -1808,7 +1820,9 @@ async function onlinePagerStep(direction) {
 function gotoOnlineRelativeEpisode(direction) {
   const activeId = onlineState.activeEpisodeId || onlineState.episodeId;
   const idx = onlineState.episodes.findIndex((e) => e.wr_id === activeId);
-  const targetIdx = idx + direction;
+  // The site lists episodes newest-first, so moving forward in story order (direction
+  // > 0, the "다음 화" button) means walking to a LOWER array index, not a higher one.
+  const targetIdx = idx - direction;
   if (targetIdx < 0 || targetIdx >= onlineState.episodes.length) return;
   const targetEp = onlineState.episodes[targetIdx];
 
@@ -1848,7 +1862,7 @@ function jumpToOnlinePage() {
 }
 
 document.addEventListener("keydown", (e) => {
-  if (onlineState.view !== "reader") return;
+  if (onlineState.view !== "reader" || panelOnline.hidden) return;
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
 
