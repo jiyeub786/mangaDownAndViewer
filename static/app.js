@@ -1433,6 +1433,7 @@ function renderOnlineEpisodeList() {
             (ep) => `
               <button type="button" class="search-result-item" data-wr-id="${escapeAttr(ep.wr_id)}">
                 <div class="search-result-title">${escapeHtml(ep.title)}</div>
+                ${ep.date ? `<div class="search-result-tags">${escapeHtml(ep.date)}</div>` : ""}
               </button>
             `
           )

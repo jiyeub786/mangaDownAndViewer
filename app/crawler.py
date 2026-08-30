@@ -35,6 +35,7 @@ def _noop_log(_msg: str) -> None:
 class Episode:
     title: str
     wr_id: str
+    date: str = ""
 
 
 @dataclass
@@ -83,7 +84,11 @@ def get_episode_list(site_url: str, toon_id: int, page_no: int, headers: dict) -
         onclick = elem.get("onclick", "")
         if title_el is None or not onclick:
             continue
-        episodes.append(Episode(title=title_el.text.strip(), wr_id=_extract_wr_id(onclick)))
+        date_el = elem.select_one("div.free-date")
+        # `free-date` also holds a trailing "(N)" comment-count in a nested <font>;
+        # take just its first direct text node, which is the "YY.MM.DD" post date.
+        date_text = next(iter(date_el.stripped_strings), "") if date_el is not None else ""
+        episodes.append(Episode(title=title_el.text.strip(), wr_id=_extract_wr_id(onclick), date=date_text))
     return episodes
 
 

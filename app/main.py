@@ -86,7 +86,7 @@ def get_online_episodes(site_url: str, toon_id: int, page: int = 1) -> dict:
         episodes = online.list_episodes(site_url, toon_id, page)
     except requests.RequestException as exc:
         raise HTTPException(502, f"회차 목록 요청에 실패했습니다: {exc}")
-    return {"page": page, "episodes": [{"wr_id": e.wr_id, "title": e.title} for e in episodes]}
+    return {"page": page, "episodes": [{"wr_id": e.wr_id, "title": e.title, "date": e.date} for e in episodes]}
 
 
 @app.get("/api/online/images")

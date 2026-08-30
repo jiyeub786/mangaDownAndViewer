@@ -20,6 +20,7 @@ from . import crawler
 class OnlineEpisode:
     wr_id: str
     title: str
+    date: str
 
 
 def list_episodes(site_url: str, toon_id: int, page: int) -> List[OnlineEpisode]:
@@ -32,7 +33,7 @@ def list_episodes(site_url: str, toon_id: int, page: int) -> List[OnlineEpisode]
     site_url = site_url.rstrip("/")
     headers = crawler.headers_for(site_url)
     episodes = crawler.get_episode_list(site_url, toon_id, page, headers)
-    return [OnlineEpisode(wr_id=e.wr_id, title=e.title) for e in episodes]
+    return [OnlineEpisode(wr_id=e.wr_id, title=e.title, date=e.date) for e in episodes]
 
 
 def list_episode_images(site_url: str, toon_id: int, wr_id: str) -> List[str]:
