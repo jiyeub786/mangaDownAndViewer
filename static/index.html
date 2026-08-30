@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MangaDL</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="top-nav">
+    <div class="wordmark">Manga<span>DL</span></div>
+    <div class="tab-switch" id="tab-switch">
+      <button type="button" class="tab-btn active" data-tab="download">다운로드</button>
+      <button type="button" class="tab-btn" data-tab="viewer">뷰어</button>
+      <button type="button" class="tab-btn" data-tab="online">온라인 보기</button>
+    </div>
+    <nav>
+      <a href="/docs" target="_blank">API 문서</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <section id="tab-panel-download">
+      <div class="hero">
+        <h1>만화 사이트 이미지 다운로더</h1>
+        <p>게시판형 만화 사이트에서 회차 목록을 조회하고 이미지를 일괄 다운로드한 뒤 zip으로 압축합니다.</p>
+      </div>
+
+      <div class="layout">
+        <div class="left-col">
+          <section class="card">
+            <h2>작품 검색</h2>
+            <div class="field-row search-row">
+              <div class="field" style="flex:1; margin-bottom:0;">
+                <input type="text" id="search-query" placeholder="작품 제목으로 검색 (사이트 주소를 먼저 입력하세요)" />
+              </div>
+              <button type="button" class="btn btn-secondary" id="search-btn" style="width:auto;">검색</button>
+            </div>
+            <span class="hint">검색 결과를 클릭하면 아래 작품 ID·제목 칸이 자동으로 채워집니다.</span>
+            <div class="search-results" id="search-results"></div>
+          </section>
+
+          <section class="card">
+            <h2>새 다운로드 작업</h2>
+            <form id="job-form">
+              <div class="field">
+                <label for="site_url">사이트 주소</label>
+                <input type="url" id="site_url" required placeholder="http://103.204.13.68:8905" />
+                <span class="hint">http(s):// 포함, 마지막 슬래시(/) 제외</span>
+              </div>
+              <div class="field">
+                <label for="toon_id">작품 ID (is=)</label>
+                <input type="number" id="toon_id" required placeholder="34978" />
+              </div>
+              <div class="field">
+                <label for="title">작품 제목</label>
+                <input type="text" id="title" required placeholder="저장 폴더 / zip 파일명으로 사용" />
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="start_page">시작 페이지</label>
+                  <input type="number" id="start_page" min="1" value="1" required />
+                </div>
+                <div class="field">
+                  <label for="end_page">끝 페이지</label>
+                  <input type="number" id="end_page" min="1" value="1" required />
+                </div>
+              </div>
+              <label class="checkbox-row">
+                <input type="checkbox" id="separate_folders" checked />
+                회차별로 폴더 나누기
+              </label>
+              <label class="checkbox-row">
+                <input type="checkbox" id="make_zip" checked />
+                완료 후 zip으로 압축
+              </label>
+              <button type="submit" class="btn btn-primary" id="submit-btn">다운로드 시작</button>
+            </form>
+          </section>
+        </div>
+
+        <section>
+          <h2 style="color:var(--on-dark); font-size:16px; font-weight:600; margin: 0 0 var(--sp-md);">작업 목록</h2>
+          <div class="job-list" id="job-list">
+            <div class="empty-state">아직 시작한 작업이 없습니다.</div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="tab-panel-viewer" hidden>
+      <div class="hero">
+        <h1>다운로드한 만화 보기</h1>
+        <p>내려받은 작품을 브라우저에서 바로 볼 수 있습니다.</p>
+      </div>
+
+      <div class="viewer-toolbar">
+        <div class="breadcrumb" id="viewer-breadcrumb"></div>
+        <div class="viewer-controls" id="viewer-controls">
+          <input type="text" id="viewer-search" placeholder="작품 검색" />
+          <select id="viewer-sort">
+            <option value="name">이름순</option>
+            <option value="recent">최근 다운로드순</option>
+            <option value="images">이미지 많은순</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="viewer-refresh">새로고침</button>
+      </div>
+
+      <div id="viewer-body"></div>
+    </section>
+
+    <section id="tab-panel-online" hidden>
+      <div class="hero">
+        <h1>온라인으로 바로 보기</h1>
+        <p>다운로드하지 않고 사이트에서 검색해서 바로 읽습니다. (toons 게시판만 지원, 다운로드 크롤러와는 별개 기능입니다.)</p>
+      </div>
+
+      <div class="viewer-toolbar">
+        <div class="breadcrumb" id="online-breadcrumb"></div>
+      </div>
+
+      <div id="online-body"></div>
+    </section>
+  </main>
+
+  <footer>MangaDL &middot; 로컬/개인 용도의 크롤링 도구입니다. 대상 사이트의 이용약관과 저작권을 준수하세요.</footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
