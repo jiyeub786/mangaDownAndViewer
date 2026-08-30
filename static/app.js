@@ -1054,6 +1054,12 @@ function gotoRelativeEpisode(title, direction) {
   if (targetIdx < 0 || targetIdx >= viewerState.episodes.length) return;
   const targetEp = viewerState.episodes[targetIdx];
 
+  // Set before the (async) episode load resolves, so the title bar reflects the
+  // new episode immediately rather than waiting on the scroll-position observer
+  // (which only fires once the user scrolls the new page into its tracked band).
+  viewerState.activeEpisodeId = targetEp.id;
+  updateReaderChrome(title);
+
   if (readerRuntime.viewMode === "paged") {
     if (direction > 0) markEpisodeRead(title, activeId);
     openEpisodePaged(title, targetEp.id, { startIndex: 1 });
@@ -1149,19 +1155,45 @@ document.addEventListener("keydown", (e) => {
   if (viewerState.view !== "reader" || panelViewer.hidden) return;
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  // 단일 문자 키(a/d/w/s/f/n/p)만 소문자로 맞춰 비교 — ArrowLeft 등 이름 있는
+  // 키는 그대로 둔다.
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+  if (key === "f") {
+    e.preventDefault();
+    toggleImmersive();
+    return;
+  }
+  if (key === "l") {
+    e.preventDefault();
+    openTitle(viewerState.title);
+    return;
+  }
+  if (key === "n") {
+    e.preventDefault();
+    gotoRelativeEpisode(viewerState.title, 1);
+    return;
+  }
+  if (key === "p") {
+    e.preventDefault();
+    gotoRelativeEpisode(viewerState.title, -1);
+    return;
+  }
 
   if (readerRuntime.viewMode === "paged") {
-    if (e.key === "ArrowRight" || e.key === " ") {
+    if (key === "ArrowRight" || key === " " || key === "d") {
       e.preventDefault();
       pagerStep(viewerState.title, readerRuntime.direction === "ltr" ? 1 : -1);
-    } else if (e.key === "ArrowLeft") {
+    } else if (key === "ArrowLeft" || key === "a") {
       e.preventDefault();
       pagerStep(viewerState.title, readerRuntime.direction === "ltr" ? -1 : 1);
-    } else if (e.key === "Home") {
+    } else if (key === "Home") {
       e.preventDefault();
       readerRuntime.paged.index = 0;
       renderPagedImage(viewerState.title);
-    } else if (e.key === "End") {
+    } else if (key === "End") {
       e.preventDefault();
       const lastIdx = readerRuntime.paged.images.length - 1;
       readerRuntime.paged.index = readerRuntime.paged.pagesPerView === 2 ? alignToPairStart(lastIdx) : lastIdx;
@@ -1170,16 +1202,16 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (e.key === " " || e.key === "PageDown" || e.key === "ArrowDown") {
+  if (key === " " || key === "PageDown" || key === "ArrowDown" || key === "s") {
     e.preventDefault();
     window.scrollBy({ top: window.innerHeight * 0.9, behavior: "smooth" });
-  } else if (e.key === "PageUp" || e.key === "ArrowUp") {
+  } else if (key === "PageUp" || key === "ArrowUp" || key === "w") {
     e.preventDefault();
     window.scrollBy({ top: -window.innerHeight * 0.9, behavior: "smooth" });
-  } else if (e.key === "Home") {
+  } else if (key === "Home") {
     e.preventDefault();
     window.scrollTo({ top: 0, behavior: "smooth" });
-  } else if (e.key === "End") {
+  } else if (key === "End") {
     e.preventDefault();
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   }
@@ -1862,6 +1894,12 @@ function gotoOnlineRelativeEpisode(direction) {
   if (targetIdx < 0 || targetIdx >= onlineState.episodes.length) return;
   const targetEp = onlineState.episodes[targetIdx];
 
+  // Set before the (async) episode load resolves, so the title bar reflects the
+  // new episode immediately rather than waiting on the scroll-position observer
+  // (which only fires once the user scrolls the new page into its tracked band).
+  onlineState.activeEpisodeId = targetEp.wr_id;
+  updateOnlineReaderChrome();
+
   if (onlineReaderRuntime.viewMode === "paged") {
     openOnlineEpisodePaged(targetEp.wr_id, { startIndex: 1 });
     return;
@@ -1901,19 +1939,43 @@ document.addEventListener("keydown", (e) => {
   if (onlineState.view !== "reader" || panelOnline.hidden) return;
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+  if (key === "f") {
+    e.preventDefault();
+    toggleImmersive();
+    return;
+  }
+  if (key === "l") {
+    e.preventDefault();
+    openOnlineEpisodes(onlineState.toonId, onlineState.seriesTitle, onlineState.page);
+    return;
+  }
+  if (key === "n") {
+    e.preventDefault();
+    gotoOnlineRelativeEpisode(1);
+    return;
+  }
+  if (key === "p") {
+    e.preventDefault();
+    gotoOnlineRelativeEpisode(-1);
+    return;
+  }
 
   if (onlineReaderRuntime.viewMode === "paged") {
-    if (e.key === "ArrowRight" || e.key === " ") {
+    if (key === "ArrowRight" || key === " " || key === "d") {
       e.preventDefault();
       onlinePagerStep(onlineReaderRuntime.direction === "ltr" ? 1 : -1);
-    } else if (e.key === "ArrowLeft") {
+    } else if (key === "ArrowLeft" || key === "a") {
       e.preventDefault();
       onlinePagerStep(onlineReaderRuntime.direction === "ltr" ? -1 : 1);
-    } else if (e.key === "Home") {
+    } else if (key === "Home") {
       e.preventDefault();
       onlineReaderRuntime.paged.index = 0;
       renderOnlinePagedImage();
-    } else if (e.key === "End") {
+    } else if (key === "End") {
       e.preventDefault();
       const lastIdx = onlineReaderRuntime.paged.images.length - 1;
       onlineReaderRuntime.paged.index = onlineReaderRuntime.paged.pagesPerView === 2 ? alignToPairStart(lastIdx) : lastIdx;
@@ -1922,16 +1984,16 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (e.key === " " || e.key === "PageDown" || e.key === "ArrowDown") {
+  if (key === " " || key === "PageDown" || key === "ArrowDown" || key === "s") {
     e.preventDefault();
     window.scrollBy({ top: window.innerHeight * 0.9, behavior: "smooth" });
-  } else if (e.key === "PageUp" || e.key === "ArrowUp") {
+  } else if (key === "PageUp" || key === "ArrowUp" || key === "w") {
     e.preventDefault();
     window.scrollBy({ top: -window.innerHeight * 0.9, behavior: "smooth" });
-  } else if (e.key === "Home") {
+  } else if (key === "Home") {
     e.preventDefault();
     window.scrollTo({ top: 0, behavior: "smooth" });
-  } else if (e.key === "End") {
+  } else if (key === "End") {
     e.preventDefault();
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   }
