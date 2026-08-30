@@ -155,7 +155,7 @@ async function runTitleSearch() {
     return;
   }
   if (!query) {
-    searchResultsEl.innerHTML = "";
+    searchResultsEl.innerHTML = '<div class="empty-state">검색어를 입력하세요.</div>';
     return;
   }
 
@@ -477,7 +477,11 @@ async function resumeTitle(title) {
 
 /* ---- 회차 목록 ---- */
 
+let titleRequestId = 0;
+
 async function openTitle(title) {
+  const requestId = ++titleRequestId;
+
   viewerState.view = "episodes";
   viewerState.title = title;
   viewerState.episodeId = null;
@@ -498,6 +502,9 @@ async function openTitle(title) {
     const resp = await fetch(`/api/library/${encodeURIComponent(title)}`);
     if (!resp.ok) throw new Error(`요청 실패 (${resp.status})`);
     const data = await resp.json();
+    // Ignore a stale response if a newer openTitle call has since started (e.g. the
+    // user clicked back to the library and into another title before this resolved).
+    if (requestId !== titleRequestId) return;
     viewerState.episodes = data.episodes;
 
     if (data.episodes.length === 0) {
@@ -506,6 +513,7 @@ async function openTitle(title) {
     }
     renderEpisodeGrid();
   } catch (err) {
+    if (requestId !== titleRequestId) return;
     viewerBody.innerHTML = `<div class="empty-state">회차 목록을 불러오지 못했습니다: ${escapeHtml(err.message)}</div>`;
   }
 }
@@ -958,7 +966,11 @@ async function openEpisodePaged(title, episodeId, opts = {}) {
 function renderPagedImage(title) {
   const { images, index, episodeId, pagesPerView } = readerRuntime.paged;
   const pagerBox = document.getElementById("reader-pager");
-  if (!pagerBox || images.length === 0) return;
+  if (!pagerBox) return;
+  if (images.length === 0) {
+    pagerBox.innerHTML = '<div class="empty-state">이 회차에는 이미지가 없습니다.</div>';
+    return;
+  }
 
   const dual = pagesPerView === 2;
   pagerBox.classList.toggle("dual", dual);
@@ -1269,6 +1281,14 @@ function showOnlineSearch() {
   teardownOnlineReaderObservers();
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
+
+  // First visit: default to whatever site URL is already in the download form,
+  // since it's very likely the same site — saves retyping it.
+  if (!onlineState.siteUrl) {
+    const downloadSiteUrl = document.getElementById("site_url").value.trim();
+    if (downloadSiteUrl) onlineState.siteUrl = downloadSiteUrl;
+  }
+
   renderOnlineBreadcrumb();
 
   onlineBody.innerHTML = `
@@ -1308,7 +1328,7 @@ async function runOnlineSearch() {
     return;
   }
   if (!query) {
-    resultsEl.innerHTML = "";
+    resultsEl.innerHTML = '<div class="empty-state">검색어를 입력하세요.</div>';
     return;
   }
 
@@ -1355,7 +1375,11 @@ function renderOnlineSearchResults(results) {
 
 /* ---- 회차 목록 화면 (사이트 페이지 단위) ---- */
 
+let onlineEpisodesRequestId = 0;
+
 async function openOnlineEpisodes(toonId, title, page) {
+  const requestId = ++onlineEpisodesRequestId;
+
   onlineState.view = "episodes";
   onlineState.toonId = toonId;
   onlineState.seriesTitle = title;
@@ -1377,9 +1401,14 @@ async function openOnlineEpisodes(toonId, title, page) {
       throw new Error(err.detail || `요청 실패 (${resp.status})`);
     }
     const data = await resp.json();
+    // A newer call to this function (e.g. a second page-nav click) may have already
+    // started and could still resolve after this one — ignore this response if so,
+    // so a slow request can't clobber a page the user has since moved past.
+    if (requestId !== onlineEpisodesRequestId) return;
     onlineState.episodes = data.episodes;
     renderOnlineEpisodeList();
   } catch (err) {
+    if (requestId !== onlineEpisodesRequestId) return;
     onlineBody.innerHTML = `<div class="empty-state">회차 목록을 불러오지 못했습니다: ${escapeHtml(err.message)}</div>`;
   }
 }
@@ -1392,7 +1421,7 @@ function renderOnlineEpisodeList() {
       <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="online-back-to-search-btn">← 검색으로</button>
       <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="online-prev-page-btn" ${onlineState.page <= 1 ? "disabled" : ""}>이전 페이지</button>
       <span style="align-self:center; font-size:12px; color:var(--muted);">페이지 ${onlineState.page}</span>
-      <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="online-next-page-btn">다음 페이지</button>
+      <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="online-next-page-btn" ${onlineState.episodes.length === 0 ? "disabled" : ""}>다음 페이지</button>
     </div>
   `;
 
@@ -1749,7 +1778,11 @@ async function openOnlineEpisodePaged(wrId, opts = {}) {
 function renderOnlinePagedImage() {
   const { images, index } = onlineReaderRuntime.paged;
   const pagerBox = document.getElementById("online-reader-pager");
-  if (!pagerBox || images.length === 0) return;
+  if (!pagerBox) return;
+  if (images.length === 0) {
+    pagerBox.innerHTML = '<div class="empty-state">이 회차에는 이미지가 없습니다.</div>';
+    return;
+  }
 
   const dual = onlineReaderRuntime.paged.pagesPerView === 2;
   pagerBox.classList.toggle("dual", dual);

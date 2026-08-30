@@ -543,6 +543,15 @@ footer {
 
 .reader-nav { display: flex; align-items: center; gap: var(--sp-xs); flex-wrap: wrap; }
 
+/* The reader toolbar can carry up to ~9 buttons (jump, pages, direction, view
+   mode, fullscreen, library, back, prev, next); flex-wrap already lets it break
+   into multiple rows, but on narrow screens shrink the controls so more of them
+   fit per row before wrapping. */
+@media (max-width: 640px) {
+  .reader-nav .btn-sm { padding: 6px 10px; font-size: 11px; }
+  .reader-jump input[type="number"] { width: 44px; }
+}
+
 .reader-jump {
   display: flex;
   align-items: center;
