@@ -11,6 +11,8 @@ class CrawlJobRequest(BaseModel):
     end_page: int = Field(1, ge=1, description="크롤링을 마칠 목록 페이지 번호 (start_page 이상)")
     separate_folders: bool = Field(True, description="회차별로 폴더를 나눌지 여부")
     make_zip: bool = Field(True, description="완료 후 zip으로 압축할지 여부")
+    source: str = Field("site2", description="크롤링 대상 사이트 종류: site2(11툰) | wfwf(늑대닷컴)")
+    list_prefix: Optional[str] = Field(None, description="wfwf(늑대닷컴) 전용 — 목록/상세 URL 계열: list | cl")
 
 
 class JobStatus(BaseModel):

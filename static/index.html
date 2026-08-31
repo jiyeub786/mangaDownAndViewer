@@ -30,6 +30,14 @@
         <div class="left-col">
           <section class="card">
             <h2>작품 검색</h2>
+            <div class="field">
+              <label for="site-kind">사이트 종류</label>
+              <select id="site-kind">
+                <option value="site2">11툰</option>
+                <option value="wfwf">늑대닷컴</option>
+              </select>
+              <span class="hint">늑대닷컴은 미러 도메인(wfwf488 등)으로 자주 옮겨다니니, 바뀌면 아래 사이트 주소만 고치면 됩니다.</span>
+            </div>
             <div class="field-row search-row">
               <div class="field" style="flex:1; margin-bottom:0;">
                 <input type="text" id="search-query" placeholder="작품 제목으로 검색 (사이트 주소를 먼저 입력하세요)" />
@@ -113,7 +121,7 @@
     <section id="tab-panel-online" hidden>
       <div class="hero">
         <h1>온라인으로 바로 보기</h1>
-        <p>다운로드하지 않고 사이트에서 검색해서 바로 읽습니다. (toons 게시판만 지원, 다운로드 크롤러와는 별개 기능입니다.)</p>
+        <p>다운로드하지 않고 사이트에서 검색해서 바로 읽습니다. (다운로드 탭과 같은 사이트 목록을 지원, 다운로드 크롤러와는 별개 기능입니다.)</p>
       </div>
 
       <div class="viewer-toolbar">

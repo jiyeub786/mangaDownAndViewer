@@ -1,7 +1,8 @@
 import os
+from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import requests
@@ -80,23 +81,60 @@ def search_titles(site_url: str, query: str) -> list[dict]:
 
 
 @app.get("/api/online/episodes")
-def get_online_episodes(site_url: str, toon_id: int, page: int = 1) -> dict:
+def get_online_episodes(site_url: str, toon_id: int, page: int = 1, source: str = "site2", list_prefix: str = "") -> dict:
     site_url = site_url.rstrip("/")
     try:
-        episodes = online.list_episodes(site_url, toon_id, page)
+        episodes = online.list_episodes(site_url, toon_id, page, source=source, list_prefix=list_prefix)
     except requests.RequestException as exc:
         raise HTTPException(502, f"회차 목록 요청에 실패했습니다: {exc}")
     return {"page": page, "episodes": [{"wr_id": e.wr_id, "title": e.title, "date": e.date} for e in episodes]}
 
 
 @app.get("/api/online/images")
-def get_online_images(site_url: str, toon_id: int, wr_id: str) -> dict:
+def get_online_images(site_url: str, toon_id: int, wr_id: str, source: str = "site2", list_prefix: str = "") -> dict:
     site_url = site_url.rstrip("/")
     try:
-        images = online.list_episode_images(site_url, toon_id, wr_id)
+        images = online.list_episode_images(site_url, toon_id, wr_id, source=source, list_prefix=list_prefix)
     except requests.RequestException as exc:
         raise HTTPException(502, f"이미지 목록 요청에 실패했습니다: {exc}")
+    if source == "wfwf":
+        # 늑대닷컴(wfwf)'s image CDNs hotlink-block a bare <img src> pointed straight
+        # at them (confirmed: browser requests came back 503) — our backend's requests
+        # calls work because they set a Referer header manually (same as the download
+        # path), so route each image through the proxy below instead of linking to
+        # the CDN directly. 11툰(site2)'s CDN doesn't enforce this, so it's untouched.
+        images = [
+            f"/api/wfwf/image-proxy?site_url={quote(site_url, safe='')}&url={quote(img, safe='')}" for img in images
+        ]
     return {"wr_id": wr_id, "images": images}
+
+
+@app.get("/api/wfwf/image-proxy")
+def wfwf_image_proxy(url: str, site_url: str):
+    headers = crawler.headers_for(site_url)
+    try:
+        resp = requests.get(url, headers=headers, timeout=10, stream=True)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"이미지 요청에 실패했습니다: {exc}")
+    return StreamingResponse(resp.iter_content(65536), media_type=resp.headers.get("content-type", "image/jpeg"))
+
+
+@app.get("/api/wfwf/search")
+def search_titles_wfwf(site_url: str, query: str) -> list[dict]:
+    query = query.strip()
+    if not query:
+        return []
+    site_url = site_url.rstrip("/")
+    headers = crawler.headers_for(site_url)
+    try:
+        results = crawler.search_titles_wfwf(site_url, query, headers)
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"검색 요청에 실패했습니다: {exc}")
+    return [
+        {"id": r.id, "title": r.title, "tags": r.tags, "description": r.description, "list_prefix": r.list_prefix}
+        for r in results
+    ]
 
 
 @app.get("/api/library")

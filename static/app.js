@@ -13,6 +13,30 @@ const STATUS_LABEL = {
 let jobsCache = [];
 let pollTimer = null;
 
+// Which site a search result came from — set when a result card is clicked (see
+// renderSearchResults below) so the next job submission dispatches to the right
+// crawler. Stays set across repeated submits (e.g. adjusting page range and
+// re-submitting the same title) until a different result is picked.
+let pendingJobSource = "site2";
+let pendingJobListPrefix = null;
+
+// wfwf's mirror domain rotates (wfwf443 -> wfwf488 -> ...) so its default is just
+// today's known-working one — meant to be edited in the site_url field, not relied on.
+const SITE_KIND_DEFAULT_URL = {
+  site2: "http://103.204.13.68:8905",
+  wfwf: "https://wfwf488.com",
+};
+
+// Swaps a site_url-ish input to the newly-picked site kind's default, but only when
+// the field is empty or still holds another kind's default — never clobbers a
+// custom mirror URL the user actually typed in.
+function applySiteKindDefault(kind, inputEl) {
+  const current = inputEl.value.trim();
+  if (!current || Object.values(SITE_KIND_DEFAULT_URL).includes(current)) {
+    inputEl.value = SITE_KIND_DEFAULT_URL[kind];
+  }
+}
+
 jobForm.addEventListener("submit", async (e) => {
   e.preventDefault();
 
@@ -31,6 +55,8 @@ jobForm.addEventListener("submit", async (e) => {
     end_page: endPage,
     separate_folders: document.getElementById("separate_folders").checked,
     make_zip: document.getElementById("make_zip").checked,
+    source: pendingJobSource,
+    list_prefix: pendingJobListPrefix,
   };
 
   submitBtn.disabled = true;
@@ -137,6 +163,7 @@ startPolling();
 const searchQueryInput = document.getElementById("search-query");
 const searchBtn = document.getElementById("search-btn");
 const searchResultsEl = document.getElementById("search-results");
+const siteKindSelect = document.getElementById("site-kind");
 
 searchBtn.addEventListener("click", runTitleSearch);
 searchQueryInput.addEventListener("keydown", (e) => {
@@ -145,10 +172,14 @@ searchQueryInput.addEventListener("keydown", (e) => {
     runTitleSearch();
   }
 });
+siteKindSelect.addEventListener("change", () => {
+  applySiteKindDefault(siteKindSelect.value, document.getElementById("site_url"));
+});
 
 async function runTitleSearch() {
   const siteUrl = document.getElementById("site_url").value.trim();
   const query = searchQueryInput.value.trim();
+  const kind = siteKindSelect.value;
 
   if (!siteUrl) {
     searchResultsEl.innerHTML = '<div class="empty-state">먼저 위 폼의 "사이트 주소"를 입력하세요.</div>';
@@ -162,14 +193,15 @@ async function runTitleSearch() {
   searchBtn.disabled = true;
   searchResultsEl.innerHTML = '<div class="empty-state">검색 중...</div>';
 
+  const endpoint = kind === "wfwf" ? "/api/wfwf/search" : "/api/search";
   try {
-    const resp = await fetch(`/api/search?site_url=${encodeURIComponent(siteUrl)}&query=${encodeURIComponent(query)}`);
+    const resp = await fetch(`${endpoint}?site_url=${encodeURIComponent(siteUrl)}&query=${encodeURIComponent(query)}`);
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || `요청 실패 (${resp.status})`);
     }
     const results = await resp.json();
-    renderSearchResults(results);
+    renderSearchResults(results, kind);
   } catch (err) {
     searchResultsEl.innerHTML = `<div class="empty-state">검색 실패: ${escapeHtml(err.message)}</div>`;
   } finally {
@@ -177,7 +209,7 @@ async function runTitleSearch() {
   }
 }
 
-function renderSearchResults(results) {
+function renderSearchResults(results, kind) {
   if (results.length === 0) {
     searchResultsEl.innerHTML = '<div class="empty-state">검색 결과가 없습니다.</div>';
     return;
@@ -186,9 +218,9 @@ function renderSearchResults(results) {
   searchResultsEl.innerHTML = results
     .map(
       (r) => `
-        <button type="button" class="search-result-item" data-result-id="${r.id}" data-result-title="${escapeAttr(r.title)}">
+        <button type="button" class="search-result-item" data-result-id="${r.id}" data-result-title="${escapeAttr(r.title)}" data-result-prefix="${r.list_prefix || ""}">
           <div class="search-result-title">${escapeHtml(r.title)}</div>
-          <div class="search-result-tags">ID ${r.id}${r.tags ? " &middot; " + escapeHtml(r.tags) : ""}</div>
+          <div class="search-result-tags">ID ${r.id}${r.tags ? " &middot; " + escapeHtml(r.tags) : ""}${kind === "wfwf" && r.description ? " &middot; " + escapeHtml(r.description) : ""}</div>
         </button>
       `
     )
@@ -196,6 +228,8 @@ function renderSearchResults(results) {
 
   searchResultsEl.querySelectorAll("[data-result-id]").forEach((el) => {
     el.addEventListener("click", () => {
+      pendingJobSource = kind;
+      pendingJobListPrefix = kind === "wfwf" ? el.getAttribute("data-result-prefix") : null;
       document.getElementById("toon_id").value = el.getAttribute("data-result-id");
       document.getElementById("title").value = el.getAttribute("data-result-title");
       document.getElementById("title").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -233,32 +267,32 @@ let titleSearchQuery = "";
 let titleSortMode = "name";
 let episodeSearchQuery = "";
 
+function activateTab(tab) {
+  tabButtons.forEach((b) => b.classList.toggle("active", b.getAttribute("data-tab") === tab));
+  exitFullscreenIfActive();
+  document.body.classList.remove("immersive");
+  // Leaving a reader mid-read via the tab switch (rather than its own back/library
+  // button) previously left its observers running and its `view` stuck at "reader" in
+  // the background — harmless on its own, but combined with opening the other
+  // reader it made both keydown listeners fire for one keypress. Tearing down here
+  // closes that off regardless of which reader (if any) is currently open.
+  if (tab !== "viewer") teardownReaderObservers();
+  if (tab !== "online") teardownOnlineReaderObservers();
+  panelDownload.hidden = tab !== "download";
+  panelViewer.hidden = tab !== "viewer";
+  panelOnline.hidden = tab !== "online";
+  if (tab === "viewer" && !viewerLoadedOnce) {
+    viewerLoadedOnce = true;
+    showTitles();
+  }
+  if (tab === "online" && !onlineLoadedOnce) {
+    onlineLoadedOnce = true;
+    showOnlineSearch();
+  }
+}
+
 tabButtons.forEach((btn) => {
-  btn.addEventListener("click", () => {
-    tabButtons.forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    const tab = btn.getAttribute("data-tab");
-    exitFullscreenIfActive();
-    document.body.classList.remove("immersive");
-    // Leaving a reader mid-read via the tab switch (rather than its own back/library
-    // button) previously left its observers running and its `view` stuck at "reader" in
-    // the background — harmless on its own, but combined with opening the other
-    // reader it made both keydown listeners fire for one keypress. Tearing down here
-    // closes that off regardless of which reader (if any) is currently open.
-    if (tab !== "viewer") teardownReaderObservers();
-    if (tab !== "online") teardownOnlineReaderObservers();
-    panelDownload.hidden = tab !== "download";
-    panelViewer.hidden = tab !== "viewer";
-    panelOnline.hidden = tab !== "online";
-    if (tab === "viewer" && !viewerLoadedOnce) {
-      viewerLoadedOnce = true;
-      showTitles();
-    }
-    if (tab === "online" && !onlineLoadedOnce) {
-      onlineLoadedOnce = true;
-      showOnlineSearch();
-    }
-  });
+  btn.addEventListener("click", () => activateTab(btn.getAttribute("data-tab")));
 });
 
 viewerRefreshBtn.addEventListener("click", () => {
@@ -1249,6 +1283,8 @@ const onlineState = {
   episodeId: null,
   activeEpisodeId: null,
   loadedIds: [],
+  source: "site2", // site2 | wfwf — which site's parser the backend should use
+  listPrefix: "", // wfwf only: "list" | "cl" (from the search result that got us here)
 };
 
 const onlineReaderRuntime = {
@@ -1310,13 +1346,15 @@ function showOnlineSearch() {
   onlineState.episodes = [];
   onlineState.episodeId = null;
   onlineState.activeEpisodeId = null;
+  onlineState.listPrefix = "";
   teardownOnlineReaderObservers();
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
 
-  // First visit: default to whatever site URL is already in the download form,
-  // since it's very likely the same site — saves retyping it.
+  // First visit: default to whatever site kind/URL is already picked in the download
+  // form, since it's very likely the same site — saves re-picking it.
   if (!onlineState.siteUrl) {
+    onlineState.source = document.getElementById("site-kind").value;
     const downloadSiteUrl = document.getElementById("site_url").value.trim();
     if (downloadSiteUrl) onlineState.siteUrl = downloadSiteUrl;
   }
@@ -1327,6 +1365,13 @@ function showOnlineSearch() {
     <section class="card">
       <h2>사이트에서 검색</h2>
       <div class="field">
+        <label for="online-site-kind">사이트 종류</label>
+        <select id="online-site-kind">
+          <option value="site2" ${onlineState.source !== "wfwf" ? "selected" : ""}>11툰</option>
+          <option value="wfwf" ${onlineState.source === "wfwf" ? "selected" : ""}>늑대닷컴</option>
+        </select>
+      </div>
+      <div class="field">
         <label for="online-site-url">사이트 주소</label>
         <input type="url" id="online-site-url" placeholder="http://103.204.13.68:8905" value="${escapeAttr(onlineState.siteUrl)}" />
       </div>
@@ -1336,7 +1381,6 @@ function showOnlineSearch() {
         </div>
         <button type="button" class="btn btn-secondary" id="online-search-btn" style="width:auto;">검색</button>
       </div>
-      <span class="hint">toons 게시판 결과만 표시됩니다.</span>
       <div class="search-results" id="online-search-results"></div>
     </section>
   `;
@@ -1348,11 +1392,15 @@ function showOnlineSearch() {
       runOnlineSearch();
     }
   });
+  document.getElementById("online-site-kind").addEventListener("change", (e) => {
+    applySiteKindDefault(e.target.value, document.getElementById("online-site-url"));
+  });
 }
 
 async function runOnlineSearch() {
   const siteUrl = document.getElementById("online-site-url").value.trim();
   const query = document.getElementById("online-search-query").value.trim();
+  const kind = document.getElementById("online-site-kind").value;
   const resultsEl = document.getElementById("online-search-results");
 
   if (!siteUrl) {
@@ -1367,20 +1415,22 @@ async function runOnlineSearch() {
   onlineState.siteUrl = siteUrl.replace(/\/+$/, "");
   resultsEl.innerHTML = '<div class="empty-state">검색 중...</div>';
 
+  onlineState.source = kind;
+  const endpoint = kind === "wfwf" ? "/api/wfwf/search" : "/api/search";
   try {
-    const resp = await fetch(`/api/search?site_url=${encodeURIComponent(onlineState.siteUrl)}&query=${encodeURIComponent(query)}`);
+    const resp = await fetch(`${endpoint}?site_url=${encodeURIComponent(onlineState.siteUrl)}&query=${encodeURIComponent(query)}`);
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err.detail || `요청 실패 (${resp.status})`);
     }
     const results = await resp.json();
-    renderOnlineSearchResults(results);
+    renderOnlineSearchResults(results, kind);
   } catch (err) {
     resultsEl.innerHTML = `<div class="empty-state">검색 실패: ${escapeHtml(err.message)}</div>`;
   }
 }
 
-function renderOnlineSearchResults(results) {
+function renderOnlineSearchResults(results, kind) {
   const resultsEl = document.getElementById("online-search-results");
   if (results.length === 0) {
     resultsEl.innerHTML = '<div class="empty-state">검색 결과가 없습니다.</div>';
@@ -1390,9 +1440,9 @@ function renderOnlineSearchResults(results) {
   resultsEl.innerHTML = results
     .map(
       (r) => `
-        <button type="button" class="search-result-item" data-toon-id="${r.id}" data-toon-title="${escapeAttr(r.title)}">
+        <button type="button" class="search-result-item" data-toon-id="${r.id}" data-toon-title="${escapeAttr(r.title)}" data-toon-prefix="${r.list_prefix || ""}">
           <div class="search-result-title">${escapeHtml(r.title)}</div>
-          <div class="search-result-tags">ID ${r.id}${r.tags ? " &middot; " + escapeHtml(r.tags) : ""}</div>
+          <div class="search-result-tags">ID ${r.id}${r.tags ? " &middot; " + escapeHtml(r.tags) : ""}${kind === "wfwf" && r.description ? " &middot; " + escapeHtml(r.description) : ""}</div>
         </button>
       `
     )
@@ -1400,6 +1450,7 @@ function renderOnlineSearchResults(results) {
 
   resultsEl.querySelectorAll("[data-toon-id]").forEach((el) => {
     el.addEventListener("click", () => {
+      onlineState.listPrefix = el.getAttribute("data-toon-prefix");
       openOnlineEpisodes(Number(el.getAttribute("data-toon-id")), el.getAttribute("data-toon-title"), 1);
     });
   });
@@ -1426,7 +1477,8 @@ async function openOnlineEpisodes(toonId, title, page) {
 
   try {
     const resp = await fetch(
-      `/api/online/episodes?site_url=${encodeURIComponent(onlineState.siteUrl)}&toon_id=${toonId}&page=${page}`
+      `/api/online/episodes?site_url=${encodeURIComponent(onlineState.siteUrl)}&toon_id=${toonId}&page=${page}` +
+        `&source=${encodeURIComponent(onlineState.source)}&list_prefix=${encodeURIComponent(onlineState.listPrefix)}`
     );
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -1488,7 +1540,8 @@ function renderOnlineEpisodeList() {
 
 async function fetchOnlineEpisodeImages(wrId) {
   const resp = await fetch(
-    `/api/online/images?site_url=${encodeURIComponent(onlineState.siteUrl)}&toon_id=${onlineState.toonId}&wr_id=${encodeURIComponent(wrId)}`
+    `/api/online/images?site_url=${encodeURIComponent(onlineState.siteUrl)}&toon_id=${onlineState.toonId}&wr_id=${encodeURIComponent(wrId)}` +
+      `&source=${encodeURIComponent(onlineState.source)}&list_prefix=${encodeURIComponent(onlineState.listPrefix)}`
   );
   if (!resp.ok) throw new Error(`요청 실패 (${resp.status})`);
   const data = await resp.json();

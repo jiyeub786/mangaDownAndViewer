@@ -103,17 +103,31 @@ def run_job(job_id: str) -> None:
     job.log(f"크롤링 시작: {job.request.title} (toon_id={job.request.toon_id})")
 
     try:
-        result = crawler.crawl_toon(
-            site_url=job.request.site_url.rstrip("/"),
-            toon_id=job.request.toon_id,
-            title=job.request.title,
-            download_root=DOWNLOAD_ROOT,
-            start_page=job.request.start_page,
-            end_page=job.request.end_page,
-            separate_folders=job.request.separate_folders,
-            log=job.log,
-            should_stop=job.should_stop,
-        )
+        if job.request.source == "wfwf":
+            result = crawler.crawl_toon_wfwf(
+                site_url=job.request.site_url.rstrip("/"),
+                toon_id=job.request.toon_id,
+                list_prefix=job.request.list_prefix or "list",
+                title=job.request.title,
+                download_root=DOWNLOAD_ROOT,
+                start_page=job.request.start_page,
+                end_page=job.request.end_page,
+                separate_folders=job.request.separate_folders,
+                log=job.log,
+                should_stop=job.should_stop,
+            )
+        else:
+            result = crawler.crawl_toon(
+                site_url=job.request.site_url.rstrip("/"),
+                toon_id=job.request.toon_id,
+                title=job.request.title,
+                download_root=DOWNLOAD_ROOT,
+                start_page=job.request.start_page,
+                end_page=job.request.end_page,
+                separate_folders=job.request.separate_folders,
+                log=job.log,
+                should_stop=job.should_stop,
+            )
         job.episodes_processed = result.episodes_processed
         job.images_downloaded = result.images_downloaded
         job.images_failed = result.images_failed
