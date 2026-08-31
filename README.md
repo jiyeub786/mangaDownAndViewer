@@ -28,24 +28,29 @@ python -m uvicorn app.main:app --reload
 
 브라우저에서 `http://127.0.0.1:8000` 접속. API 문서는 `/docs`.
 
-## 문서
+## 스크린샷
 
-| 필요한 것 | 문서 |
+| 다운로드 | 뷰어(라이브러리) |
 |---|---|
-| 사용법(설치~REST API) | [`docs/USAGE.md`](docs/USAGE.md) |
-| 뷰어 세부 기능 설명 | [`docs/VIEWER_FEATURES.md`](docs/VIEWER_FEATURES.md) |
-| 변경 이력 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) |
-| 프로젝트 개요 | [`CLAUDE.md`](CLAUDE.md) |
-| 아키텍처/구현 세부사항 | [`docs/아키텍처.md`](docs/아키텍처.md) |
-| UI 디자인 시스템 원본 | [`docs/design.md`](docs/design.md) |
-| 알려진 문제·개선 아이디어 | [`docs/개선사항.md`](docs/개선사항.md) |
+| ![다운로드 화면](assets/screenshots/download.jpg) | ![뷰어 라이브러리](assets/screenshots/library.jpg) |
+
+| 뷰어 - 페이지 넘김 모드 | 뷰어 - 웹툰(세로 스크롤) 모드 |
+|---|---|
+| ![페이지 넘김 모드](assets/screenshots/reader-paged.jpg) | ![웹툰 모드](assets/screenshots/reader-webtoon.jpg) |
+
+| 온라인 바로 보기 |
+|---|
+| ![온라인 보기](assets/screenshots/online-view.jpg) |
+
+> 뷰어 스크린샷은 실제로 표시되는 만화 페이지 내용을 모자이크 처리했습니다.
+> 다운로드/온라인 보기 화면의 사이트 주소 입력창도 예시 값으로 가렸습니다.
 
 ## 구조
 
 ```
 app/            FastAPI 백엔드 (크롤러, 작업 큐, 뷰어/온라인 API)
 static/         프런트엔드 (바닐라 JS SPA, 프레임워크 없음)
-docs/           사용법 · 기능 · 변경 이력 · 아키텍처 · 디자인 시스템 문서
+assets/         README용 스크린샷 등 정적 리소스
 ```
 
 ## 제한사항

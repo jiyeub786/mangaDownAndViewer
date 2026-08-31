@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .idea/
 downloads/
+.env
+CLAUDE.md
+docs/
