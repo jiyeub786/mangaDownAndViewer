@@ -8,21 +8,36 @@ from fastapi.staticfiles import StaticFiles
 import requests
 
 from . import jobs, library, online
-from . import crawler
+from . import crawler, hitomi
 from .crawler import sanitize_folder_name
 from .models import CrawlJobRequest, JobStatus
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-DOWNLOAD_ROOT = jobs.DOWNLOAD_ROOT
-os.makedirs(DOWNLOAD_ROOT, exist_ok=True)
+TITLES_ROOT = jobs.TITLES_ROOT
+os.makedirs(TITLES_ROOT, exist_ok=True)
 
 app = FastAPI(title="온라인만화뷰어", description="만화 사이트 이미지 크롤러 웹 앱")
 
 
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    # Without this, browsers heuristically cache /static/app.js and style.css from
+    # Last-Modified alone and keep running the old JS/CSS after an edit (new HTML,
+    # stale JS — seen in practice). no-cache still allows the cache, it just forces
+    # an ETag check, which is a cheap 304 when nothing changed.
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.post("/api/jobs", response_model=JobStatus)
 def create_job(request: CrawlJobRequest, background_tasks: BackgroundTasks) -> JobStatus:
-    if request.end_page < request.start_page:
+    if request.episodes is not None:
+        if not request.episodes:
+            raise HTTPException(400, "선택한 회차가 없습니다.")
+    elif request.end_page < request.start_page:
         raise HTTPException(400, "end_page는 start_page보다 크거나 같아야 합니다.")
 
     job = jobs.create_job(request)
@@ -78,6 +93,16 @@ def search_titles(site_url: str, query: str) -> list[dict]:
     except ValueError:
         raise HTTPException(502, "사이트 응답을 해석할 수 없습니다 (JSON 형식이 아님).")
     return [{"id": r.id, "title": r.title, "tags": r.tags, "description": r.description} for r in results]
+
+
+@app.get("/api/episodes/all")
+def get_all_episodes(site_url: str, toon_id: int, source: str = "site2", list_prefix: str = "") -> dict:
+    site_url = site_url.rstrip("/")
+    try:
+        episodes = crawler.list_all_episodes(site_url, toon_id, source=source, list_prefix=list_prefix)
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"회차 목록 요청에 실패했습니다: {exc}")
+    return {"episodes": episodes}
 
 
 @app.get("/api/online/episodes")
@@ -137,10 +162,120 @@ def search_titles_wfwf(site_url: str, query: str) -> list[dict]:
     ]
 
 
+def _hitomi_item_dict(item: hitomi.GalleryListItem) -> dict:
+    # hitomi's thumbnail CDN hotlink-blocks a bare <img src> the same way the
+    # full-image CDN does (confirmed: 404s without a hitomi.la Referer, which the
+    # browser never sends for our cross-origin img tags) — proxy it like images.
+    thumbnail_url = (
+        f"/api/hitomi/thumb-proxy?url={quote(item.thumbnail_url, safe='')}" if item.thumbnail_url else ""
+    )
+    return {
+        "id": item.id,
+        "title": item.title,
+        "series": item.series,
+        "type": item.type,
+        "tags": item.tags,
+        "date": item.date,
+        "thumbnail_url": thumbnail_url,
+        "artists": [{"name": a.name, "slug": a.slug} for a in item.artists],
+        "language": item.language,
+        "group": item.group,
+        "characters": item.characters,
+        "page_count": item.page_count,
+    }
+
+
+@app.get("/api/hitomi/list")
+def get_hitomi_list(offset: int = 0, artist: str = "", exclude_tags: str = "") -> dict:
+    needles = [t.strip() for t in exclude_tags.split(",") if t.strip()]
+    try:
+        if artist:
+            items, next_offset, has_more = hitomi.fetch_artist_list(artist, offset, needles)
+        else:
+            items, next_offset, has_more = hitomi.fetch_list(offset, needles)
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"목록 요청에 실패했습니다: {exc}")
+    return {
+        "offset": offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "items": [_hitomi_item_dict(i) for i in items],
+    }
+
+
+@app.get("/api/hitomi/search")
+def search_hitomi(query: str, offset: int = 0, exclude_tags: str = "") -> dict:
+    needles = [t.strip() for t in exclude_tags.split(",") if t.strip()]
+    try:
+        items, next_offset, has_more = hitomi.search_list(query, offset, needles)
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"검색 요청에 실패했습니다: {exc}")
+    return {
+        "offset": offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "items": [_hitomi_item_dict(i) for i in items],
+    }
+
+
+@app.get("/api/hitomi/gallery/{gallery_id}")
+def get_hitomi_gallery(gallery_id: int) -> dict:
+    try:
+        detail = hitomi.fetch_gallery(gallery_id)
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"작품 정보 요청에 실패했습니다: {exc}")
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    return {
+        "id": detail.id,
+        "title": detail.title,
+        "type": detail.type,
+        "tags": detail.tags,
+        "artists": [{"name": a.name, "slug": a.slug} for a in detail.artists],
+        "date": detail.date,
+        "images": [
+            {"hash": f.hash, "width": f.width, "height": f.height, "url": f"/api/hitomi/image-proxy?image_hash={f.hash}"}
+            for f in detail.files
+        ],
+        "related": [_hitomi_item_dict(i) for i in detail.related],
+    }
+
+
+@app.get("/api/hitomi/image-proxy")
+def hitomi_image_proxy(image_hash: str, ext: str = "webp"):
+    url = hitomi.image_url(image_hash, ext)
+    try:
+        resp = requests.get(url, headers=hitomi.REFERER_HEADERS, timeout=10, stream=True)
+        resp.raise_for_status()
+    except requests.RequestException:
+        # Most failures here are the network bypass (GoodbyeDPI) not being active
+        # at that moment, not a stale gg.js mapping — but refreshing gg.js and
+        # retrying once is cheap and covers the rare case where we asked right as
+        # the site rotated it.
+        try:
+            hitomi.refresh_gg()
+            url = hitomi.image_url(image_hash, ext)
+            resp = requests.get(url, headers=hitomi.REFERER_HEADERS, timeout=10, stream=True)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise HTTPException(502, f"이미지 요청에 실패했습니다: {exc}")
+    return StreamingResponse(resp.iter_content(65536), media_type=resp.headers.get("content-type", "image/webp"))
+
+
+@app.get("/api/hitomi/thumb-proxy")
+def hitomi_thumb_proxy(url: str):
+    try:
+        resp = requests.get(url, headers=hitomi.REFERER_HEADERS, timeout=10, stream=True)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"썸네일 요청에 실패했습니다: {exc}")
+    return StreamingResponse(resp.iter_content(65536), media_type=resp.headers.get("content-type", "image/webp"))
+
+
 @app.get("/api/library")
 def get_library() -> list[dict]:
     try:
-        titles = library.list_titles(DOWNLOAD_ROOT)
+        titles = library.list_titles(TITLES_ROOT)
     except library.InvalidPath:
         raise HTTPException(400, "잘못된 경로입니다.")
     return [
@@ -158,7 +293,7 @@ def get_library() -> list[dict]:
 @app.get("/api/library/{title}")
 def get_library_title(title: str) -> dict:
     try:
-        episodes = library.get_title_detail(DOWNLOAD_ROOT, title)
+        episodes = library.get_title_detail(TITLES_ROOT, title)
     except library.InvalidPath:
         raise HTTPException(400, "잘못된 경로입니다.")
     if episodes is None:
@@ -175,7 +310,7 @@ def get_library_title(title: str) -> dict:
 @app.get("/api/library/{title}/episodes/{episode_id}/images")
 def get_library_episode_images(title: str, episode_id: str) -> dict:
     try:
-        images = library.get_episode_images(DOWNLOAD_ROOT, title, episode_id)
+        images = library.get_episode_images(TITLES_ROOT, title, episode_id)
     except library.InvalidPath:
         raise HTTPException(400, "잘못된 경로입니다.")
     if images is None:
@@ -192,4 +327,6 @@ def index() -> FileResponse:
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Downloaded images themselves, served read-only for the in-browser viewer.
-app.mount("/files", StaticFiles(directory=DOWNLOAD_ROOT), name="files")
+# Mounted at downloads/_folders (TITLES_ROOT), not downloads/ itself — per-title
+# folders live there now, sibling to (and excluding) downloads/_zips.
+app.mount("/files", StaticFiles(directory=TITLES_ROOT), name="files")

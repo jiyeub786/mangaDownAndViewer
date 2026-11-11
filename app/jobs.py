@@ -13,10 +13,14 @@ import time
 import uuid
 from typing import Dict, Optional
 
-from . import crawler
+from . import crawler, hitomi
 from .models import CrawlJobRequest, JobStatus
 
 DOWNLOAD_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "downloads")
+# Per-title loose folders live under here, separate from DOWNLOAD_ROOT/_zips —
+# keeps the two kinds of download output (folders you might browse directly,
+# zips meant for one-shot download) from mixing at the top level.
+TITLES_ROOT = os.path.join(DOWNLOAD_ROOT, "_folders")
 MAX_LOG_LINES = 500
 
 
@@ -103,13 +107,41 @@ def run_job(job_id: str) -> None:
     job.log(f"크롤링 시작: {job.request.title} (toon_id={job.request.toon_id})")
 
     try:
-        if job.request.source == "wfwf":
+        if job.request.episodes and job.request.source != "hitomi":
+            site_url = job.request.site_url.rstrip("/")
+            headers = crawler.headers_for(site_url)
+            if job.request.source == "wfwf":
+                list_prefix = job.request.list_prefix or "list"
+                get_images = lambda wr_id: crawler.get_image_list_wfwf(  # noqa: E731
+                    site_url, job.request.toon_id, list_prefix, wr_id, headers
+                )
+            else:
+                get_images = lambda wr_id: crawler.get_image_list(site_url, job.request.toon_id, wr_id, headers)  # noqa: E731
+            result = crawler.crawl_selected_episodes(
+                title=job.request.title,
+                download_root=TITLES_ROOT,
+                episodes=[e.model_dump() for e in job.request.episodes],
+                separate_folders=job.request.separate_folders,
+                get_images=get_images,
+                headers=headers,
+                log=job.log,
+                should_stop=job.should_stop,
+            )
+        elif job.request.source == "hitomi":
+            result = hitomi.crawl_gallery(
+                gallery_id=job.request.toon_id,
+                title=job.request.title,
+                download_root=TITLES_ROOT,
+                log=job.log,
+                should_stop=job.should_stop,
+            )
+        elif job.request.source == "wfwf":
             result = crawler.crawl_toon_wfwf(
                 site_url=job.request.site_url.rstrip("/"),
                 toon_id=job.request.toon_id,
                 list_prefix=job.request.list_prefix or "list",
                 title=job.request.title,
-                download_root=DOWNLOAD_ROOT,
+                download_root=TITLES_ROOT,
                 start_page=job.request.start_page,
                 end_page=job.request.end_page,
                 separate_folders=job.request.separate_folders,
@@ -121,7 +153,7 @@ def run_job(job_id: str) -> None:
                 site_url=job.request.site_url.rstrip("/"),
                 toon_id=job.request.toon_id,
                 title=job.request.title,
-                download_root=DOWNLOAD_ROOT,
+                download_root=TITLES_ROOT,
                 start_page=job.request.start_page,
                 end_page=job.request.end_page,
                 separate_folders=job.request.separate_folders,
@@ -135,15 +167,40 @@ def run_job(job_id: str) -> None:
         if job.should_stop():
             job.status = "stopped"
         else:
-            if job.request.make_zip:
-                source_dir = os.path.join(DOWNLOAD_ROOT, crawler.sanitize_folder_name(job.request.title))
-                zip_path = os.path.join(DOWNLOAD_ROOT, "_zips", f"{crawler.sanitize_folder_name(job.request.title)}.zip")
-                job.zip_path = crawler.zip_directory(source_dir, zip_path, log=job.log)
-            job.status = "completed"
-            job.log(
-                f"완료: 회차 {job.episodes_processed}개, 이미지 {job.images_downloaded}개 성공"
-                f"{f', {job.images_failed}개 실패' if job.images_failed else ''}"
-            )
+            # A half-downloaded episode (some pages ok, some not) reads worse than a
+            # cleanly-missing one, and a job with zero successful images is not a
+            # "completed" job either way — both cases fail the whole job and delete
+            # its download folder rather than leaving a broken partial result behind.
+            fully_failed = job.images_downloaded == 0 and job.images_failed > 0
+            had_partial_episode = result.partial_episode_count > 0
+            # Selected-episode jobs usually add to an existing title folder — wiping
+            # it would destroy episodes downloaded earlier, so only the half-downloaded
+            # episodes themselves are removed.
+            selected_mode = bool(job.request.episodes) and job.request.source != "hitomi"
+            if had_partial_episode or fully_failed:
+                job.status = "failed"
+                job.error = (
+                    f"{result.partial_episode_count}개 회차가 일부만 성공해 "
+                    f"{'그 회차만' if selected_mode else '작품 전체를'} 삭제했습니다."
+                    if had_partial_episode
+                    else "성공한 이미지가 없어 실패로 표시합니다."
+                )
+                job.log(job.error)
+                source_dir = os.path.join(TITLES_ROOT, crawler.sanitize_folder_name(job.request.title))
+                if selected_mode:
+                    crawler.delete_partial_episodes(result.partial_paths, log=job.log)
+                else:
+                    crawler.delete_download(source_dir, log=job.log)
+            else:
+                if job.request.make_zip:
+                    source_dir = os.path.join(TITLES_ROOT, crawler.sanitize_folder_name(job.request.title))
+                    zip_path = os.path.join(DOWNLOAD_ROOT, "_zips", f"{crawler.sanitize_folder_name(job.request.title)}.zip")
+                    job.zip_path = crawler.zip_directory(source_dir, zip_path, log=job.log)
+                job.status = "completed"
+                job.log(
+                    f"완료: 회차 {job.episodes_processed}개, 이미지 {job.images_downloaded}개 성공"
+                    f"{f', {job.images_failed}개 실패' if job.images_failed else ''}"
+                )
     except Exception as exc:  # noqa: BLE001 - surface any crawl failure to the UI
         job.status = "failed"
         job.error = str(exc)

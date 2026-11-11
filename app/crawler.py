@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -52,6 +53,13 @@ class CrawlResult:
     images_downloaded: int = 0
     images_failed: int = 0
     episode_folders: List[str] = field(default_factory=list)
+    # Number of episodes where SOME but not all images downloaded — a half-downloaded
+    # episode reads worse than a cleanly-missing one, so jobs.py treats this (not a
+    # fully-failed episode) as the trigger to fail the whole job and delete its folder.
+    partial_episode_count: int = 0
+    # crawl_selected_episodes only: folders/files of those partial episodes, so a
+    # failed selected-episode job can delete just them, not the whole title folder.
+    partial_paths: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -309,24 +317,30 @@ def crawl_toon_wfwf(
             image_urls = get_image_list_wfwf(site_url, toon_id, list_prefix, ep.wr_id, headers)
             log(f"[{episode_num}] {ep.title} - 이미지 {len(image_urls)}개 발견")
 
+            ep_downloaded = 0
+            ep_failed = 0
             for i, img_url in enumerate(image_urls):
                 if not img_url.strip():
                     continue
                 file_name = f"{file_prefix}_{i + 1:03d}"
                 ok = download_image(episode_dir, file_name, img_url, headers, log=log)
                 if ok:
-                    result.images_downloaded += 1
+                    ep_downloaded += 1
                 else:
-                    result.images_failed += 1
+                    ep_failed += 1
+            result.images_downloaded += ep_downloaded
+            result.images_failed += ep_failed
+            if ep_downloaded > 0 and ep_failed > 0:
+                result.partial_episode_count += 1
 
             result.episodes_processed += 1
 
     return result
 
 
-def download_image(save_path: str, file_name: str, url: str, headers: dict, log: LogFn = _noop_log) -> bool:
-    """Download one image to ``{save_path}{file_name}.jpg``. Returns True on success."""
-    file_path = os.path.join(save_path, f"{file_name}.jpg")
+def download_image(save_path: str, file_name: str, url: str, headers: dict, log: LogFn = _noop_log, ext: str = "jpg") -> bool:
+    """Download one image to ``{save_path}{file_name}.{ext}``. Returns True on success."""
+    file_path = os.path.join(save_path, f"{file_name}.{ext}")
     if os.path.exists(file_path) and os.path.getsize(file_path) > MIN_VALID_FILE_SIZE:
         return True  # already downloaded
 
@@ -407,19 +421,152 @@ def crawl_toon(
             image_urls = get_image_list(site_url, toon_id, ep.wr_id, headers)
             log(f"[{episode_num}] {ep.title} - 이미지 {len(image_urls)}개 발견")
 
+            ep_downloaded = 0
+            ep_failed = 0
             for i, img_url in enumerate(image_urls):
                 if not img_url.strip():
                     continue
                 file_name = f"{file_prefix}_{i + 1:03d}"
                 ok = download_image(episode_dir, file_name, img_url, headers, log=log)
                 if ok:
-                    result.images_downloaded += 1
+                    ep_downloaded += 1
                 else:
-                    result.images_failed += 1
+                    ep_failed += 1
+            result.images_downloaded += ep_downloaded
+            result.images_failed += ep_failed
+            if ep_downloaded > 0 and ep_failed > 0:
+                result.partial_episode_count += 1
 
             result.episodes_processed += 1
 
     return result
+
+
+MAX_LIST_PAGES = 50
+
+
+def list_all_episodes(site_url: str, toon_id: int, source: str = "site2", list_prefix: str = "") -> List[dict]:
+    """Every episode of a title, oldest first, each tagged with its 1-based ``num``.
+
+    ``num`` matches what ``crawl_toon``/``crawl_toon_wfwf`` assign when the whole
+    title is downloaded from page 1 to the last page — so a selected-episode
+    download (``crawl_selected_episodes``) lands on the same file/folder names as
+    a full one. Pages are read until an empty one comes back (confirmed for 11툰:
+    past-the-end pages return 0 episodes); a repeated ``wr_id`` or ``MAX_LIST_PAGES``
+    also stops the loop in case a site repeats its last page instead.
+    """
+    headers = headers_for(site_url)
+    seen: set = set()
+    pages: List[List[Episode]] = []
+    for page_no in range(1, MAX_LIST_PAGES + 1):
+        if source == "wfwf":
+            episodes = get_episode_list_wfwf(site_url, toon_id, list_prefix or "list", page_no, headers, sort="o")
+        else:
+            episodes = get_episode_list(site_url, toon_id, page_no, headers)
+        episodes = [e for e in episodes if e.wr_id not in seen]
+        if not episodes:
+            break
+        seen.update(e.wr_id for e in episodes)
+        pages.append(episodes)
+
+    if source == "wfwf":
+        ordered = [e for page in pages for e in page]  # already oldest-first
+    else:
+        # site2 pages are newest-first; crawl_toon walks pages last->first and
+        # reverses each one, which is the same as reversing the whole list.
+        ordered = [e for page in reversed(pages) for e in reversed(page)]
+    return [{"num": i + 1, "wr_id": e.wr_id, "title": e.title, "date": e.date} for i, e in enumerate(ordered)]
+
+
+def crawl_selected_episodes(
+    title: str,
+    download_root: str,
+    episodes: List[dict],
+    separate_folders: bool,
+    get_images: Callable[[str], List[str]],
+    headers: dict,
+    log: LogFn = _noop_log,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> CrawlResult:
+    """Download only the given episodes (``{wr_id, title, num}`` from ``list_all_episodes``).
+
+    Uses each episode's own ``num`` instead of a per-job counter, so adding a few
+    episodes to an existing title folder doesn't collide with what's already there.
+    ``get_images(wr_id)`` is the site-specific image-list lookup. Paths of
+    partially-downloaded episodes are collected in ``result.partial_paths`` so the
+    caller can delete just those instead of the whole title folder.
+    """
+    base_dir = os.path.join(download_root, sanitize_folder_name(title))
+    os.makedirs(base_dir, exist_ok=True)
+
+    result = CrawlResult()
+    for ep in sorted(episodes, key=lambda e: e["num"]):
+        if should_stop and should_stop():
+            log("사용자 요청으로 중단되었습니다.")
+            break
+
+        num = ep["num"]
+        folder_name = sanitize_folder_name(ep["title"])
+        if separate_folders:
+            episode_dir = os.path.join(base_dir, f"{num:02d}_{folder_name}")
+            os.makedirs(episode_dir, exist_ok=True)
+            file_prefix = f"{num:02d}_{folder_name}"
+        else:
+            episode_dir = base_dir
+            file_prefix = f"{num:03d}"
+
+        result.episode_folders.append(episode_dir)
+
+        log(f"[{num}] {ep['title']} - 이미지 목록 조회 중...")
+        image_urls = get_images(ep["wr_id"])
+        log(f"[{num}] {ep['title']} - 이미지 {len(image_urls)}개 발견")
+
+        ep_downloaded = 0
+        ep_failed = 0
+        for i, img_url in enumerate(image_urls):
+            if not img_url.strip():
+                continue
+            file_name = f"{file_prefix}_{i + 1:03d}"
+            ok = download_image(episode_dir, file_name, img_url, headers, log=log)
+            if ok:
+                ep_downloaded += 1
+            else:
+                ep_failed += 1
+        result.images_downloaded += ep_downloaded
+        result.images_failed += ep_failed
+        if ep_downloaded > 0 and ep_failed > 0:
+            result.partial_episode_count += 1
+            if separate_folders:
+                result.partial_paths.append(episode_dir)
+            else:
+                result.partial_paths.extend(
+                    os.path.join(base_dir, f)
+                    for f in os.listdir(base_dir)
+                    if f.startswith(f"{file_prefix}_")
+                )
+
+        result.episodes_processed += 1
+
+    return result
+
+
+def delete_partial_episodes(paths: List[str], log: LogFn = _noop_log) -> None:
+    """Remove only the given partially-downloaded episode folders/files (selected-episode jobs)."""
+    for path in paths:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        elif os.path.isfile(path):
+            os.remove(path)
+        log(f"  일부만 받아진 회차를 삭제했습니다: {path}")
+
+
+def delete_download(base_dir: str, log: LogFn = _noop_log) -> None:
+    """Remove a title's whole download folder — used when a job is marked failed
+    (some episode partially downloaded, or nothing downloaded at all) so a broken
+    half-download doesn't linger in the library."""
+    if os.path.isdir(base_dir):
+        shutil.rmtree(base_dir)
+        log(f"  실패한 작업의 다운로드 폴더를 삭제했습니다: {base_dir}")
 
 
 def zip_directory(source_dir: str, zip_path: str, log: LogFn = _noop_log) -> str:

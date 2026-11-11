@@ -42,7 +42,13 @@ jobForm.addEventListener("submit", async (e) => {
 
   const startPage = Number(document.getElementById("start_page").value);
   const endPage = Number(document.getElementById("end_page").value);
-  if (endPage < startPage) {
+  const episodeMode = currentRangeMode() === "episodes";
+  const selectedEpisodes = episodeMode ? getSelectedEpisodes() : null;
+  if (episodeMode && selectedEpisodes.length === 0) {
+    alert("다운로드할 회차를 하나 이상 선택하세요.");
+    return;
+  }
+  if (!episodeMode && endPage < startPage) {
     alert("끝 페이지는 시작 페이지보다 크거나 같아야 합니다.");
     return;
   }
@@ -57,6 +63,7 @@ jobForm.addEventListener("submit", async (e) => {
     make_zip: document.getElementById("make_zip").checked,
     source: pendingJobSource,
     list_prefix: pendingJobListPrefix,
+    episodes: selectedEpisodes,
   };
 
   submitBtn.disabled = true;
@@ -93,6 +100,10 @@ async function refreshJobs() {
 }
 
 function renderJobs() {
+  const runningCount = jobsCache.filter((j) => j.status === "running" || j.status === "pending").length;
+  const countEl = document.getElementById("job-running-count");
+  if (countEl) countEl.textContent = runningCount ? `(${runningCount}개 진행중)` : "";
+
   if (jobsCache.length === 0) {
     jobListEl.innerHTML = '<div class="empty-state">아직 시작한 작업이 없습니다.</div>';
     return;
@@ -232,10 +243,139 @@ function renderSearchResults(results, kind) {
       pendingJobListPrefix = kind === "wfwf" ? el.getAttribute("data-result-prefix") : null;
       document.getElementById("toon_id").value = el.getAttribute("data-result-id");
       document.getElementById("title").value = el.getAttribute("data-result-title");
+      clearEpisodeList();
       document.getElementById("title").scrollIntoView({ behavior: "smooth", block: "center" });
     });
   });
 }
+
+/* ==================== 회차 선택 다운로드 (다운로드 탭) ==================== */
+
+const episodeSelectEl = document.getElementById("episode-select");
+const pageRangeFieldsEl = document.getElementById("page-range-fields");
+const episodeListEl = document.getElementById("episode-list");
+const episodeCountEl = document.getElementById("episode-count");
+const episodeLoadBtn = document.getElementById("episode-load-btn");
+
+// Full episode list ({num, wr_id, title, date}, oldest first) from /api/episodes/all.
+// num is the title-wide episode number, so selected downloads land on the same
+// file/folder names a full download would use.
+let loadedEpisodes = [];
+let lastEpisodeClickIndex = null; // anchor for Shift+click range selection
+
+function currentRangeMode() {
+  return document.querySelector('input[name="range_mode"]:checked').value;
+}
+
+document.querySelectorAll('input[name="range_mode"]').forEach((radio) => {
+  radio.addEventListener("change", () => {
+    const episodeMode = currentRangeMode() === "episodes";
+    episodeSelectEl.hidden = !episodeMode;
+    pageRangeFieldsEl.hidden = episodeMode;
+  });
+});
+
+// A list loaded for another title would download the wrong episodes — drop it
+// whenever the title it belongs to may have changed.
+function clearEpisodeList() {
+  loadedEpisodes = [];
+  lastEpisodeClickIndex = null;
+  episodeListEl.innerHTML = "";
+  updateEpisodeCount();
+}
+document.getElementById("toon_id").addEventListener("input", clearEpisodeList);
+siteKindSelect.addEventListener("change", clearEpisodeList);
+
+function episodeCheckboxes() {
+  return Array.from(episodeListEl.querySelectorAll("input[data-ep-index]"));
+}
+
+function updateEpisodeCount() {
+  const selected = episodeCheckboxes().filter((cb) => cb.checked).length;
+  episodeCountEl.textContent = loadedEpisodes.length ? `${loadedEpisodes.length}개 중 ${selected}개 선택됨` : "";
+}
+
+function getSelectedEpisodes() {
+  return episodeCheckboxes()
+    .filter((cb) => cb.checked)
+    .map((cb) => {
+      const ep = loadedEpisodes[Number(cb.getAttribute("data-ep-index"))];
+      return { wr_id: ep.wr_id, title: ep.title, num: ep.num };
+    });
+}
+
+episodeLoadBtn.addEventListener("click", async () => {
+  const siteUrl = document.getElementById("site_url").value.trim();
+  const toonId = document.getElementById("toon_id").value.trim();
+  if (!siteUrl || !toonId) {
+    alert("사이트 주소와 작품 ID를 먼저 입력하세요.");
+    return;
+  }
+
+  clearEpisodeList();
+  episodeLoadBtn.disabled = true;
+  episodeListEl.innerHTML = '<div class="empty-state">회차 목록을 불러오는 중...</div>';
+  const params = new URLSearchParams({
+    site_url: siteUrl,
+    toon_id: toonId,
+    source: pendingJobSource,
+    list_prefix: pendingJobListPrefix || "",
+  });
+  try {
+    const resp = await fetch(`/api/episodes/all?${params}`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `요청 실패 (${resp.status})`);
+    }
+    loadedEpisodes = (await resp.json()).episodes;
+    renderEpisodeList();
+  } catch (err) {
+    episodeListEl.innerHTML = `<div class="empty-state">불러오기 실패: ${escapeHtml(err.message)}</div>`;
+  } finally {
+    episodeLoadBtn.disabled = false;
+  }
+});
+
+function renderEpisodeList() {
+  if (loadedEpisodes.length === 0) {
+    episodeListEl.innerHTML = '<div class="empty-state">회차가 없습니다.</div>';
+    updateEpisodeCount();
+    return;
+  }
+  episodeListEl.innerHTML = loadedEpisodes
+    .map(
+      (ep, i) => `
+        <label class="episode-item">
+          <input type="checkbox" data-ep-index="${i}" />
+          <span class="episode-num">${ep.num}</span>
+          <span class="episode-title">${escapeHtml(ep.title)}</span>
+          ${ep.date ? `<span class="episode-date">${escapeHtml(ep.date)}</span>` : ""}
+        </label>
+      `
+    )
+    .join("");
+
+  episodeCheckboxes().forEach((cb) => {
+    cb.addEventListener("click", (e) => {
+      const index = Number(cb.getAttribute("data-ep-index"));
+      if (e.shiftKey && lastEpisodeClickIndex !== null) {
+        const [from, to] = [Math.min(lastEpisodeClickIndex, index), Math.max(lastEpisodeClickIndex, index)];
+        const boxes = episodeCheckboxes();
+        for (let k = from; k <= to; k++) boxes[k].checked = cb.checked;
+      }
+      lastEpisodeClickIndex = index;
+      updateEpisodeCount();
+    });
+  });
+  updateEpisodeCount();
+}
+
+function setAllEpisodes(checked) {
+  episodeCheckboxes().forEach((cb) => (cb.checked = checked));
+  updateEpisodeCount();
+}
+document.getElementById("episode-all-btn").addEventListener("click", () => setAllEpisodes(true));
+document.getElementById("episode-none-btn").addEventListener("click", () => setAllEpisodes(false));
 
 /* ==================== 뷰어 탭 ==================== */
 
@@ -243,6 +383,7 @@ const tabButtons = document.querySelectorAll(".tab-btn");
 const panelDownload = document.getElementById("tab-panel-download");
 const panelViewer = document.getElementById("tab-panel-viewer");
 const panelOnline = document.getElementById("tab-panel-online");
+const panelHitomi = document.getElementById("tab-panel-hitomi");
 const viewerBody = document.getElementById("viewer-body");
 const viewerBreadcrumb = document.getElementById("viewer-breadcrumb");
 const onlineBody = document.getElementById("online-body");
@@ -278,9 +419,11 @@ function activateTab(tab) {
   // closes that off regardless of which reader (if any) is currently open.
   if (tab !== "viewer") teardownReaderObservers();
   if (tab !== "online") teardownOnlineReaderObservers();
+  if (tab !== "hitomi") teardownHitomiReaderObservers();
   panelDownload.hidden = tab !== "download";
   panelViewer.hidden = tab !== "viewer";
   panelOnline.hidden = tab !== "online";
+  panelHitomi.hidden = tab !== "hitomi";
   if (tab === "viewer" && !viewerLoadedOnce) {
     viewerLoadedOnce = true;
     showTitles();
@@ -288,6 +431,10 @@ function activateTab(tab) {
   if (tab === "online" && !onlineLoadedOnce) {
     onlineLoadedOnce = true;
     showOnlineSearch();
+  }
+  if (tab === "hitomi" && !hitomiLoadedOnce) {
+    hitomiLoadedOnce = true;
+    showHitomiList();
   }
 }
 
@@ -756,6 +903,11 @@ function toggleViewMode(title) {
   if (readerRuntime.viewMode === "paged") {
     openEpisodePaged(title, activeId, { startIndex: resumePage });
   } else {
+    // Scroll mode only refreshes the title bar once the position observer sees a
+    // page (and even then, only on episode change) — without this, the "· n페이지"
+    // suffix renderPagedImage left behind would linger after switching away from
+    // paged mode until the reader happened to cross an episode boundary.
+    updateReaderChrome(title);
     openEpisodeScroll(title, activeId, { jumpToPageIndex: resumePage });
   }
 }
@@ -793,7 +945,17 @@ function updateReaderChrome(title) {
   const activeId = viewerState.activeEpisodeId || viewerState.episodeId;
   const activeEp = viewerState.episodes.find((e) => e.id === activeId);
   const titleEl = document.getElementById("reader-title-text");
-  if (titleEl) titleEl.textContent = `${title} · ${activeEp ? activeEp.name : activeId}`;
+  if (titleEl) {
+    let text = `${title} · ${activeEp ? activeEp.name : activeId}`;
+    if (readerRuntime.viewMode === "paged") {
+      const { index, images, pagesPerView } = readerRuntime.paged;
+      if (images.length > 0) {
+        const hasSecondPage = pagesPerView === 2 && index + 1 < images.length;
+        text += hasSecondPage ? ` · ${index + 1}, ${index + 2} 페이지` : ` · ${index + 1}페이지`;
+      }
+    }
+    titleEl.textContent = text;
+  }
 
   const idx = viewerState.episodes.findIndex((e) => e.id === activeId);
   const prevEp = idx > 0 ? viewerState.episodes[idx - 1] : null;
@@ -1033,13 +1195,11 @@ function renderPagedImage(title) {
     .getElementById("page-zone-right")
     .addEventListener("click", () => pagerStep(title, readerRuntime.direction === "ltr" ? 1 : -1));
 
+  // Paged mode shows its page number inline in the title bar (updateReaderChrome)
+  // instead of the corner pill, which is scroll mode's — keep it hidden here so a
+  // leftover scroll-mode reading doesn't show through after switching modes.
   const indicator = document.getElementById("page-indicator");
-  if (indicator) {
-    indicator.hidden = false;
-    indicator.textContent = dual && pageIndexes.length === 2
-      ? `${index + 1}-${index + 2} / ${images.length}`
-      : `${index + 1} / ${images.length}`;
-  }
+  if (indicator) indicator.hidden = true;
 
   updateReaderChrome(title);
 
@@ -1180,6 +1340,8 @@ function syncImmersiveWithFullscreen() {
   if (btn) btn.textContent = label;
   const onlineBtn = document.getElementById("online-reader-immersive-btn");
   if (onlineBtn) onlineBtn.textContent = label;
+  const hitomiBtn = document.getElementById("hitomi-reader-immersive-btn");
+  if (hitomiBtn) hitomiBtn.textContent = label;
 }
 
 document.addEventListener("fullscreenchange", syncImmersiveWithFullscreen);
@@ -2051,3 +2213,816 @@ document.addEventListener("keydown", (e) => {
     window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   }
 });
+
+/* ====================================================================
+   hitomi 탭 — hitomi.la 목록 조회, 갤러리 열람(전체 스크롤), 관련 작품,
+   zip 다운로드(기존 /api/jobs 작업 큐 재사용, source="hitomi").
+   ==================================================================== */
+
+const hitomiBody = document.getElementById("hitomi-body");
+let hitomiLoadedOnce = false;
+
+// Fixed checklist of tag substrings the user can exclude from the list (matched
+// case-insensitively against the "Tags:" text server-side). Add more here if
+// asked for another one — the UI/state/API plumbing doesn't need to change.
+const HITOMI_TAG_FILTERS = [
+  { key: "♂", label: "♂ 태그 제외" },
+  { key: "loli", label: "loli 태그 제외" },
+];
+
+// Pagination is by raw .nozomi offset, not page number — excludeTags can drop
+// items, which breaks a simple "page N = bytes N*80..." mapping (see
+// app/hitomi.py's _fetch_nozomi_page). offsetStack remembers each page's starting
+// offset so "이전 페이지" can go back without the server needing to track any
+// session state: push before going forward, pop before going back.
+const hitomiState = {
+  view: "list",
+  offsetStack: [0],
+  hasMore: false,
+  nextOffset: 0,
+  artist: null,
+  artistName: null,
+  excludeTags: [],
+  // 체크박스가 지금 가리키는 상태(아직 미적용) — "적용" 버튼을 눌러야
+  // excludeTags로 확정되고 리로드된다(체크박스 하나 누를 때마다 매번
+  // 다시 불러오던 불편함 개선).
+  pendingExcludeTags: [],
+  filterPanelOpen: false,
+  galleryData: null,
+  // Title/tag text search (여러 단어 = AND) — 작가 필터와는 배타적으로 동작
+  // (검색을 시작하면 작가 필터를 비우고, 작가를 고르면 검색어를 비운다).
+  searchQuery: "",
+};
+
+// Ctrl/가운데 클릭으로 새 탭에서 열기가 되도록 hitomi 전용 클릭 요소를 실제
+// <a href> 링크로 렌더링할 때 쓰는 쿼리스트링 — 페이지 로드 시 이 값을 다시
+// 읽어 그 화면으로 바로 진입한다(맨 아래 "hitomi 딥링크" 절 참고).
+function hitomiGalleryUrl(id) {
+  return `?tab=hitomi&view=gallery&id=${id}`;
+}
+function hitomiArtistUrl(slug, name) {
+  const params = new URLSearchParams({ tab: "hitomi", view: "list", artist: slug });
+  if (name) params.set("artistName", name);
+  return `?${params.toString()}`;
+}
+
+async function loadHitomiListOffset(offset) {
+  hitomiState.view = "list";
+  teardownHitomiReaderObservers();
+  exitFullscreenIfActive();
+  document.body.classList.remove("immersive");
+  hitomiBody.innerHTML = '<div class="empty-state">불러오는 중...</div>';
+
+  try {
+    const params = new URLSearchParams({ offset: String(offset) });
+    if (hitomiState.excludeTags.length) params.set("exclude_tags", hitomiState.excludeTags.join(","));
+    let endpoint = "/api/hitomi/list";
+    if (hitomiState.searchQuery) {
+      endpoint = "/api/hitomi/search";
+      params.set("query", hitomiState.searchQuery);
+    } else if (hitomiState.artist) {
+      params.set("artist", hitomiState.artist);
+    }
+    const resp = await fetch(`${endpoint}?${params}`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `요청 실패 (${resp.status})`);
+    }
+    const data = await resp.json();
+    hitomiState.nextOffset = data.next_offset;
+    hitomiState.hasMore = data.has_more;
+    renderHitomiList(data.items);
+  } catch (err) {
+    hitomiBody.innerHTML = `<div class="empty-state">목록을 불러오지 못했습니다: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// Starts a fresh browse from the top — artist filter (or null to clear it) and
+// the current excludeTags apply. Used for the initial tab open, an artist-name
+// click, and "전체 목록으로". Also clears any active search — artist filter and
+// search are mutually exclusive modes.
+function showHitomiList(artist = null, artistName = null) {
+  hitomiState.artist = artist;
+  hitomiState.artistName = artistName;
+  hitomiState.searchQuery = "";
+  hitomiState.offsetStack = [0];
+  return loadHitomiListOffset(0);
+}
+
+// Starts a fresh title/tag search — clears the artist filter (mutually exclusive).
+function runHitomiSearch(query) {
+  query = query.trim();
+  if (!query) return;
+  hitomiState.searchQuery = query;
+  hitomiState.artist = null;
+  hitomiState.artistName = null;
+  hitomiState.offsetStack = [0];
+  return loadHitomiListOffset(0);
+}
+
+// Re-renders whichever page is currently on top of the stack, unchanged — for
+// "← 목록"/`l` returning from a gallery without losing your place.
+function hitomiReloadCurrentList() {
+  return loadHitomiListOffset(hitomiState.offsetStack[hitomiState.offsetStack.length - 1]);
+}
+
+function hitomiNextPage() {
+  hitomiState.offsetStack.push(hitomiState.nextOffset);
+  return loadHitomiListOffset(hitomiState.nextOffset);
+}
+
+function hitomiPrevPage() {
+  if (hitomiState.offsetStack.length <= 1) return;
+  hitomiState.offsetStack.pop();
+  return loadHitomiListOffset(hitomiState.offsetStack[hitomiState.offsetStack.length - 1]);
+}
+
+function hitomiFirstPage() {
+  if (hitomiState.offsetStack.length <= 1) return;
+  hitomiState.offsetStack = [0];
+  return loadHitomiListOffset(0);
+}
+
+// 체크박스 변경은 더 이상 즉시 리로드하지 않고 pendingExcludeTags만 갱신 —
+// "적용" 버튼을 눌러야 excludeTags로 확정된다(applyHitomiTagFilters).
+function toggleHitomiPendingTagFilter(key) {
+  const idx = hitomiState.pendingExcludeTags.indexOf(key);
+  if (idx === -1) hitomiState.pendingExcludeTags.push(key);
+  else hitomiState.pendingExcludeTags.splice(idx, 1);
+}
+
+function applyHitomiTagFilters() {
+  hitomiState.excludeTags = [...hitomiState.pendingExcludeTags];
+  hitomiState.offsetStack = [0];
+  return loadHitomiListOffset(0);
+}
+
+// 위/아래 페이저에서 공유하는 버튼 마크업 — id만 suffix로 구분해서 같은
+// 화면에 두 벌이 있어도 DOM id가 안 겹치게 한다.
+function hitomiPagerButtonsHtml(suffix) {
+  const pageNum = hitomiState.offsetStack.length;
+  return `
+    <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-first-page${suffix}" ${pageNum <= 1 ? "disabled" : ""}>처음 페이지</button>
+    <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-prev-page${suffix}" ${pageNum <= 1 ? "disabled" : ""}>이전 페이지</button>
+    <span class="hint">${pageNum}페이지</span>
+    <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-next-page${suffix}" ${hitomiState.hasMore ? "" : "disabled"}>다음 페이지</button>`;
+}
+
+function wireHitomiPagerButtons(suffix) {
+  document.getElementById(`hitomi-first-page${suffix}`).addEventListener("click", hitomiFirstPage);
+  document.getElementById(`hitomi-prev-page${suffix}`).addEventListener("click", hitomiPrevPage);
+  document.getElementById(`hitomi-next-page${suffix}`).addEventListener("click", hitomiNextPage);
+}
+
+function renderHitomiList(items) {
+  // 리로드가 끝났으니 체크박스 상태를 다시 실제 적용된 필터와 맞춘다.
+  hitomiState.pendingExcludeTags = [...hitomiState.excludeTags];
+
+  const searchBar = `
+    <div class="action-row">
+      <input type="text" id="hitomi-search-input" placeholder="작품명/태그 검색 (여러 단어 = AND, 한국어 작품만)" value="${escapeAttr(hitomiState.searchQuery)}" style="flex:1; min-width:200px;" />
+      <button type="button" class="btn btn-primary btn-sm" style="width:auto;" id="hitomi-search-btn">검색</button>
+    </div>`;
+
+  const modeBar = hitomiState.searchQuery
+    ? `<span class="hint">검색: "${escapeHtml(hitomiState.searchQuery)}"</span>
+       <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-clear-artist">전체 목록으로</button>`
+    : hitomiState.artist
+    ? `<span class="hint">작가: ${escapeHtml(hitomiState.artistName || hitomiState.artist)}</span>
+       <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-clear-artist">전체 목록으로</button>`
+    : "";
+  const pager = `<div class="action-row">${modeBar}${hitomiPagerButtonsHtml("")}</div>`;
+  // 목록이 길면 다음 페이지로 넘어가려고 맨 위로 다시 스크롤해야 하는 불편함이
+  // 있어서, 같은 버튼을 그리드 아래에도 한 번 더 둔다(id만 접미사로 구분).
+  const bottomPager = items.length > 0 ? `<div class="action-row">${hitomiPagerButtonsHtml("-bottom")}</div>` : "";
+
+  // 필터 목록은 나중에 더 추가될 수 있어서(HITOMI_TAG_FILTERS), 화면에 늘 펼쳐
+  // 두지 않고 접이식으로 묶어 공간을 아낀다. 펼침 상태는 체크박스를 눌러도
+  // (매번 목록을 다시 그리므로) 유지되도록 hitomiState에 따로 기억해 둔다.
+  const activeCount = hitomiState.excludeTags.length;
+  const filterPanel = `
+    <details class="hitomi-collapsible" id="hitomi-filter-details" ${hitomiState.filterPanelOpen ? "open" : ""}>
+      <summary>태그 필터${activeCount ? ` (${activeCount}개 적용중)` : ""}</summary>
+      <div class="action-row">
+        ${HITOMI_TAG_FILTERS.map(
+          (f) => `
+            <label class="checkbox-row" style="margin:0;">
+              <input type="checkbox" data-tag-filter="${escapeAttr(f.key)}" ${hitomiState.pendingExcludeTags.includes(f.key) ? "checked" : ""} />
+              ${escapeHtml(f.label)}
+            </label>`
+        ).join("")}
+        <button type="button" class="btn btn-primary btn-sm" style="width:auto;" id="hitomi-filter-apply">적용</button>
+      </div>
+    </details>`;
+
+  const gridHtml = items.length === 0
+    ? '<div class="empty-state">항목이 없습니다(필터가 너무 좁을 수 있음 — "다음 페이지"를 눌러 더 찾아보세요).</div>'
+    : `<div class="hitomi-grid">${items.map(renderHitomiCard).join("")}</div>`;
+
+  hitomiBody.innerHTML = searchBar + pager + filterPanel + gridHtml + bottomPager;
+
+  document.getElementById("hitomi-search-btn").addEventListener("click", () => {
+    runHitomiSearch(document.getElementById("hitomi-search-input").value);
+  });
+  document.getElementById("hitomi-search-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runHitomiSearch(e.target.value);
+  });
+  document.getElementById("hitomi-filter-details").addEventListener("toggle", (e) => {
+    hitomiState.filterPanelOpen = e.target.open;
+  });
+  hitomiBody.querySelectorAll("[data-tag-filter]").forEach((el) => {
+    el.addEventListener("change", () => toggleHitomiPendingTagFilter(el.getAttribute("data-tag-filter")));
+  });
+  document.getElementById("hitomi-filter-apply").addEventListener("click", applyHitomiTagFilters);
+  wireHitomiPagerButtons("");
+  if (items.length > 0) wireHitomiPagerButtons("-bottom");
+  const clearArtistBtn = document.getElementById("hitomi-clear-artist");
+  if (clearArtistBtn) clearArtistBtn.addEventListener("click", () => showHitomiList());
+  wireHitomiGalleryLinks(hitomiBody);
+  wireHitomiArtistLinks(hitomiBody);
+  wireHitomiTagsToggle(hitomiBody);
+}
+
+// 작가명을 누르면 그 작가의 한국어 작품 목록으로 필터링(hitomi.la의
+// /artist/{slug}-korean.html과 같은 규칙) — slug가 없는(파싱 실패한) 작가는
+// 그냥 텍스트로만 표시. 목록 카드·상세보기 헤더 양쪽에서 재사용. 실제 href가
+// 있는 <a>라 Ctrl/가운데 클릭으로 새 탭에서 열 수 있다(wireHitomiArtistLinks).
+function hitomiArtistLinksHtml(artists) {
+  return (artists || [])
+    .map((a) =>
+      a.slug
+        ? `<a href="${escapeAttr(hitomiArtistUrl(a.slug, a.name))}" class="link-btn" data-open-artist="${escapeAttr(a.slug)}" data-open-artist-name="${escapeAttr(a.name)}">${escapeHtml(a.name)}</a>`
+        : escapeHtml(a.name)
+    )
+    .join(", ");
+}
+
+function wireHitomiArtistLinks(container) {
+  container.querySelectorAll("[data-open-artist]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      // list/related cards nest this link inside a [data-open-gallery] card —
+      // without stopPropagation the click would also open that gallery.
+      e.stopPropagation();
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return; // 브라우저가 새 탭으로 열게 그대로 둔다
+      e.preventDefault();
+      showHitomiList(el.getAttribute("data-open-artist"), el.getAttribute("data-open-artist-name"));
+    });
+  });
+}
+
+// 갤러리 카드(목록/관련 작품)를 여는 오버레이 링크 배선 — renderHitomiCard가
+// 만드는 [data-open-gallery] <a>가 대상. 실제 href가 있어 Ctrl/가운데 클릭은
+// 새 탭으로, 일반 클릭은 SPA 화면 전환으로 처리한다.
+function wireHitomiGalleryLinks(container) {
+  container.querySelectorAll("[data-open-gallery]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+      e.preventDefault();
+      openHitomiGallery(Number(el.getAttribute("data-open-gallery")));
+    });
+  });
+}
+
+// decensored/uncensored 태그를 맨 앞으로, 나머지는 오름차순 정렬 — 이 두
+// 키워드가 있으면 "앞 3개만 보이고 나머지 접기" 로직에서도 보통 바로 보이게
+// 된다(renderHitomiTagsField가 정렬 후 자르기 때문).
+function sortHitomiTags(tags) {
+  const isSpecial = (t) => /decensored|uncensored/i.test(t);
+  const pinned = tags.filter(isSpecial);
+  const rest = tags.filter((t) => !isSpecial(t)).sort((a, b) => a.localeCompare(b));
+  return [...pinned, ...rest];
+}
+
+// decensored/uncensored 단어를 빨간 볼드로 강조. escapeHtml로 먼저 이스케이프한
+// 뒤 그 결과 문자열에 정규식을 적용한다 — 영문 단어라 이스케이프에 영향받지
+// 않아 안전하다.
+function highlightSpecialKeywords(text) {
+  return escapeHtml(text).replace(/decensored|uncensored/gi, (m) => `<span class="hl-keyword">${m}</span>`);
+}
+
+// "[artist names] title", or "[N/A] title" when the gallery has no listed artist —
+// shared by list/related cards and the detail header.
+function hitomiTitleLine(title, artists) {
+  const links = hitomiArtistLinksHtml(artists) || "N/A";
+  return `[${links}] ${highlightSpecialKeywords(title)}`;
+}
+
+// Tags can run long (a dozen+) — show the first 3 and let a "+N개 더" toggle reveal
+// the rest in place, instead of the card growing to fit every tag up front.
+function renderHitomiTagsField(tagsStr) {
+  if (!tagsStr) return "";
+  const tags = sortHitomiTags(tagsStr.split(" / ").filter(Boolean));
+  if (tags.length <= 3) {
+    return `<div class="lib-count">Tags: ${tags.map(highlightSpecialKeywords).join(" / ")}</div>`;
+  }
+  const shown = tags.slice(0, 3).map(highlightSpecialKeywords).join(" / ");
+  const rest = tags.slice(3).map(highlightSpecialKeywords).join(" / ");
+  const moreLabel = `+${tags.length - 3}개 더`;
+  return `
+    <div class="lib-count">
+      Tags: ${shown}<span data-tags-rest hidden> / ${rest}</span>
+      <button type="button" class="link-btn" data-tags-toggle data-more-label="${escapeAttr(moreLabel)}">${moreLabel}</button>
+    </div>
+  `;
+}
+
+function wireHitomiTagsToggle(container) {
+  container.querySelectorAll("[data-tags-toggle]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const rest = btn.closest(".lib-count").querySelector("[data-tags-rest]");
+      rest.hidden = !rest.hidden;
+      btn.textContent = rest.hidden ? btn.getAttribute("data-more-label") : "접기";
+    });
+  });
+}
+
+function renderHitomiCard(item) {
+  const cover = item.thumbnail_url
+    ? `<img class="lib-cover" src="${escapeAttr(item.thumbnail_url)}" loading="lazy" alt="${escapeHtml(item.title)}" />`
+    : `<div class="lib-cover-empty">이미지 없음</div>`;
+
+  const fields = [
+    ["쪽수", item.page_count ? `${item.page_count}쪽` : ""],
+    ["Group", item.group],
+    ["Type", item.type],
+    ["Language", item.language],
+    ["Series", item.series],
+    ["Characters", item.characters],
+  ];
+  const fieldsHtml =
+    fields
+      .filter(([, value]) => value)
+      .map(([label, value]) => `<div class="lib-count">${label}: ${escapeHtml(value)}</div>`)
+      .join("") + renderHitomiTagsField(item.tags);
+
+  return `
+    <div class="lib-card">
+      <a class="lib-card-link" href="${escapeAttr(hitomiGalleryUrl(item.id))}" data-open-gallery="${item.id}" aria-label="열기"></a>
+      ${cover}
+      <div class="lib-meta">
+        <div class="lib-name">${hitomiTitleLine(item.title, item.artists)}</div>
+        ${fieldsHtml}
+        <div class="lib-count">${escapeHtml(item.date)}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function openHitomiGallery(galleryId) {
+  hitomiState.view = "gallery";
+  teardownHitomiReaderObservers();
+  hitomiBody.innerHTML = '<div class="empty-state">불러오는 중...</div>';
+  window.scrollTo({ top: 0 });
+
+  try {
+    const resp = await fetch(`/api/hitomi/gallery/${galleryId}`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `요청 실패 (${resp.status})`);
+    }
+    const data = await resp.json();
+    hitomiState.galleryData = data;
+    renderHitomiGallery(data);
+  } catch (err) {
+    hitomiBody.innerHTML = `<div class="empty-state">불러오지 못했습니다: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+/* ---- 상세보기 리더 — 뷰어/온라인 탭과 같은 스크롤·페이지 넘김·전체화면·
+   방향전환·페이지 점프·키보드 단축키를 제공한다. 회차 개념이 없어(갤러리
+   하나 = 이미지 배열 하나) 에피소드 경계를 넘나드는 부분(다음/이전 화,
+   무한 스크롤 자동 로드)만 뺐다 — 보기모드/방향/1·2쪽 설정은 뷰어·온라인
+   탭과 같은 localStorage 키를 공유해 취향이 이어지지만, 런타임 상태
+   (hitomiReaderRuntime)는 독립적이다. ---- */
+
+const hitomiReaderRuntime = {
+  positionObserver: null,
+  viewMode: loadStringPref(READER_VIEW_MODE_KEY, "scroll", ["scroll", "paged"]),
+  direction: loadStringPref(READER_DIRECTION_KEY, "ltr", ["ltr", "rtl"]),
+  paged: {
+    images: [],
+    index: 0,
+    pagesPerView: Number(loadStringPref(READER_PAGES_KEY, "1", ["1", "2"])),
+  },
+};
+
+function teardownHitomiReaderObservers() {
+  if (hitomiReaderRuntime.positionObserver) hitomiReaderRuntime.positionObserver.disconnect();
+  hitomiReaderRuntime.positionObserver = null;
+}
+
+function renderHitomiGallery(data) {
+  const topBar = `
+    <div class="action-row">
+      <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-back-btn">← 목록</button>
+      <button type="button" class="btn btn-primary btn-sm" style="width:auto;" id="hitomi-download-btn">zip으로 다운로드</button>
+      <span class="hint" id="hitomi-download-status"></span>
+    </div>`;
+
+  // 상세보기는 목록 카드가 이미 Group/Type/Language/Series/Characters/Tags를
+  // 다 보여주므로 여기선 [작가명] 작품명 + 날짜로만 단순 표기.
+  // 관련 작품은 <details>로 접어둔 채 맨 위에 둔다 — 펼치기 전까진 공간을
+  // 차지하지 않으면서도, 읽기 시작하기 전에 바로 보이는 위치.
+  const relatedHtml = data.related.length
+    ? `<details class="hitomi-collapsible">
+         <summary>관련 작품 (${data.related.length})</summary>
+         <div class="hitomi-grid">${data.related.map(renderHitomiCard).join("")}</div>
+       </details>`
+    : "";
+
+  hitomiBody.innerHTML = `
+    ${topBar}
+    <div class="reader-header">
+      <div>
+        <div class="reader-title">${hitomiTitleLine(data.title, data.artists)}</div>
+        <div class="hint">${escapeHtml(data.date)} &middot; ${data.images.length}쪽</div>
+      </div>
+      <div class="reader-nav">
+        <div class="reader-jump">
+          <input type="number" min="1" id="hitomi-reader-jump-input" placeholder="쪽" />
+          <button type="button" class="btn btn-secondary btn-sm" id="hitomi-reader-jump-btn">이동</button>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="hitomi-reader-pages-btn" hidden></button>
+        <button type="button" class="btn btn-secondary btn-sm" id="hitomi-reader-direction-btn" hidden></button>
+        <button type="button" class="btn btn-secondary btn-sm" id="hitomi-reader-viewmode-btn"></button>
+        <button type="button" class="btn btn-secondary btn-sm" id="hitomi-reader-immersive-btn">전체화면</button>
+      </div>
+    </div>
+    ${relatedHtml}
+    <div class="reader-strip" id="hitomi-reader-strip"></div>
+    <div class="reader-pager" id="hitomi-reader-pager" hidden></div>
+    <div class="page-indicator" id="hitomi-page-indicator" hidden></div>
+  `;
+
+  document.getElementById("hitomi-back-btn").addEventListener("click", hitomiReloadCurrentList);
+  document.getElementById("hitomi-download-btn").addEventListener("click", () => startHitomiDownload(data));
+  document.getElementById("hitomi-reader-immersive-btn").addEventListener("click", toggleImmersive);
+  document.getElementById("hitomi-reader-jump-btn").addEventListener("click", jumpToHitomiPage);
+  document.getElementById("hitomi-reader-jump-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") jumpToHitomiPage();
+  });
+  document.getElementById("hitomi-reader-viewmode-btn").addEventListener("click", toggleHitomiViewMode);
+  document.getElementById("hitomi-reader-direction-btn").addEventListener("click", toggleHitomiDirection);
+  document.getElementById("hitomi-reader-pages-btn").addEventListener("click", toggleHitomiPagesPerView);
+  wireHitomiGalleryLinks(hitomiBody);
+  wireHitomiArtistLinks(hitomiBody);
+  wireHitomiTagsToggle(hitomiBody);
+
+  applyHitomiViewModeUI();
+  if (hitomiReaderRuntime.viewMode === "paged") {
+    openHitomiPaged(data);
+  } else {
+    renderHitomiScroll(data);
+  }
+}
+
+function applyHitomiViewModeUI() {
+  const isPaged = hitomiReaderRuntime.viewMode === "paged";
+  const strip = document.getElementById("hitomi-reader-strip");
+  const pager = document.getElementById("hitomi-reader-pager");
+  if (strip) strip.hidden = isPaged;
+  if (pager) pager.hidden = !isPaged;
+
+  const viewBtn = document.getElementById("hitomi-reader-viewmode-btn");
+  if (viewBtn) viewBtn.textContent = isPaged ? "웹툰 모드로 보기" : "페이지 넘김으로 보기";
+
+  const dirBtn = document.getElementById("hitomi-reader-direction-btn");
+  if (dirBtn) {
+    dirBtn.hidden = !isPaged;
+    dirBtn.textContent = hitomiReaderRuntime.direction === "ltr" ? "▶ 왼쪽 → 오른쪽" : "◀ 오른쪽 → 왼쪽";
+  }
+
+  const pagesBtn = document.getElementById("hitomi-reader-pages-btn");
+  if (pagesBtn) {
+    pagesBtn.hidden = !isPaged;
+    pagesBtn.textContent = hitomiReaderRuntime.paged.pagesPerView === 2 ? "1쪽씩 보기" : "2쪽씩 보기";
+  }
+}
+
+function toggleHitomiViewMode() {
+  let resumePage = 1;
+  if (hitomiReaderRuntime.viewMode === "paged") {
+    resumePage = hitomiReaderRuntime.paged.index + 1;
+  }
+
+  hitomiReaderRuntime.viewMode = hitomiReaderRuntime.viewMode === "paged" ? "scroll" : "paged";
+  try {
+    localStorage.setItem(READER_VIEW_MODE_KEY, hitomiReaderRuntime.viewMode);
+  } catch (err) {
+    // ignore
+  }
+
+  teardownHitomiReaderObservers();
+  applyHitomiViewModeUI();
+
+  const data = hitomiState.galleryData;
+  if (hitomiReaderRuntime.viewMode === "paged") {
+    openHitomiPaged(data, { startIndex: resumePage });
+  } else {
+    renderHitomiScroll(data, { jumpToPageIndex: resumePage });
+  }
+}
+
+function toggleHitomiDirection() {
+  hitomiReaderRuntime.direction = hitomiReaderRuntime.direction === "ltr" ? "rtl" : "ltr";
+  try {
+    localStorage.setItem(READER_DIRECTION_KEY, hitomiReaderRuntime.direction);
+  } catch (err) {
+    // ignore
+  }
+  applyHitomiViewModeUI();
+  if (hitomiReaderRuntime.viewMode === "paged") renderHitomiPagedImage();
+}
+
+function toggleHitomiPagesPerView() {
+  hitomiReaderRuntime.paged.pagesPerView = hitomiReaderRuntime.paged.pagesPerView === 2 ? 1 : 2;
+  try {
+    localStorage.setItem(READER_PAGES_KEY, String(hitomiReaderRuntime.paged.pagesPerView));
+  } catch (err) {
+    // ignore
+  }
+  if (hitomiReaderRuntime.paged.pagesPerView === 2) {
+    hitomiReaderRuntime.paged.index = alignToPairStart(hitomiReaderRuntime.paged.index);
+  }
+  applyHitomiViewModeUI();
+  renderHitomiPagedImage();
+}
+
+/* -- 웹툰 모드: 세로 스크롤 (전체 이미지가 이미 다 있어 무한 스크롤 로드 없음) -- */
+
+// hitomi 이미지 프록시가 502로 실패하면(주로 그 순간 네트워크 우회 프로그램이
+// 꺼져 있어서 — docs/claude_plan/hitomi-viewer.md "26번 분석" 참고) 깨진
+// <img> 자리에 안내 + "다시 시도" 버튼을 넣어, 캐시를 무효화하는 쿼리스트링을
+// 붙여 그 이미지 하나만 다시 요청할 수 있게 한다.
+function attachHitomiImageRetry(img) {
+  img.addEventListener("error", () => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "img-error";
+    if (img.style.aspectRatio) wrapper.style.aspectRatio = img.style.aspectRatio;
+    wrapper.innerHTML = `
+      <span>이미지를 불러오지 못했습니다.</span>
+      <button type="button" class="btn btn-secondary btn-sm" style="width:auto;">다시 시도</button>
+    `;
+    wrapper.querySelector("button").addEventListener("click", () => {
+      wrapper.replaceWith(img);
+      const sep = img.dataset.baseSrc.includes("?") ? "&" : "?";
+      img.src = `${img.dataset.baseSrc}${sep}retry=${Date.now()}`;
+    });
+    img.replaceWith(wrapper);
+  });
+}
+
+function wireHitomiImageRetries(imgs) {
+  imgs.forEach((img) => {
+    img.dataset.baseSrc = img.getAttribute("src");
+    attachHitomiImageRetry(img);
+  });
+}
+
+function renderHitomiScroll(data, opts = {}) {
+  const strip = document.getElementById("hitomi-reader-strip");
+  if (!strip) return;
+
+  // aspect-ratio reserves each page's height before the image itself loads — without it
+  // the whole strip's height keeps shifting as lazy-loaded pages arrive, and Chrome's
+  // scroll anchoring drags the scroll position along with it (observed: thousands of
+  // pixels of drift on longer galleries).
+  strip.innerHTML = data.images
+    .map(
+      (img, i) =>
+        `<img src="${escapeAttr(img.url)}" loading="lazy" alt="${i + 1}쪽" data-page-index="${i + 1}" data-page-total="${data.images.length}" style="aspect-ratio:${img.width || 1}/${img.height || 1};" />`
+    )
+    .join("");
+  wireHitomiImageRetries(strip.querySelectorAll("img"));
+
+  setupHitomiPositionObserver();
+
+  if (opts.jumpToPageIndex && opts.jumpToPageIndex > 1) {
+    const target = strip.querySelector(`img[data-page-index="${opts.jumpToPageIndex}"]`);
+    if (target) {
+      target.scrollIntoView({ block: "start" });
+      return;
+    }
+  }
+  window.scrollTo({ top: 0 });
+}
+
+function setupHitomiPositionObserver() {
+  hitomiReaderRuntime.positionObserver = new IntersectionObserver(
+    (entries) => {
+      const visible = entries.filter((e) => e.isIntersecting);
+      if (visible.length === 0) return;
+      visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+      const top = visible[0].target;
+      const indicator = document.getElementById("hitomi-page-indicator");
+      if (indicator) {
+        indicator.hidden = false;
+        indicator.textContent = `${top.dataset.pageIndex} / ${top.dataset.pageTotal}`;
+      }
+    },
+    { rootMargin: "-45% 0px -50% 0px", threshold: 0 }
+  );
+  document.querySelectorAll("#hitomi-reader-strip img").forEach((img) => hitomiReaderRuntime.positionObserver.observe(img));
+}
+
+/* -- 페이지 넘김 모드 -- */
+
+function openHitomiPaged(data, opts = {}) {
+  hitomiReaderRuntime.paged.images = data.images;
+  let startIndex = opts.startIndex ? Math.min(Math.max(opts.startIndex - 1, 0), data.images.length - 1) : 0;
+  if (hitomiReaderRuntime.paged.pagesPerView === 2) startIndex = alignToPairStart(startIndex);
+  hitomiReaderRuntime.paged.index = Math.max(startIndex, 0);
+  renderHitomiPagedImage();
+}
+
+function renderHitomiPagedImage() {
+  const { images, index, pagesPerView } = hitomiReaderRuntime.paged;
+  const pagerBox = document.getElementById("hitomi-reader-pager");
+  if (!pagerBox) return;
+  if (images.length === 0) {
+    pagerBox.innerHTML = '<div class="empty-state">이 작품에는 이미지가 없습니다.</div>';
+    return;
+  }
+
+  const dual = pagesPerView === 2;
+  pagerBox.classList.toggle("dual", dual);
+
+  let pageIndexes;
+  if (dual) {
+    const a = index;
+    const b = index + 1 < images.length ? index + 1 : null;
+    pageIndexes = hitomiReaderRuntime.direction === "ltr" ? [a, b] : [b, a];
+    pageIndexes = pageIndexes.filter((i) => i !== null);
+  } else {
+    pageIndexes = [index];
+  }
+
+  pagerBox.innerHTML = [
+    `<div class="page-zone page-zone-left" id="hitomi-page-zone-left" title="이전 쪽"></div>`,
+    ...pageIndexes.map((i) => `<img class="pager-image" src="${escapeAttr(images[i].url)}" alt="${i + 1}" />`),
+    `<div class="page-zone page-zone-right" id="hitomi-page-zone-right" title="다음 쪽"></div>`,
+  ].join("");
+  wireHitomiImageRetries(pagerBox.querySelectorAll("img.pager-image"));
+
+  document
+    .getElementById("hitomi-page-zone-left")
+    .addEventListener("click", () => hitomiPagerStep(hitomiReaderRuntime.direction === "ltr" ? -1 : 1));
+  document
+    .getElementById("hitomi-page-zone-right")
+    .addEventListener("click", () => hitomiPagerStep(hitomiReaderRuntime.direction === "ltr" ? 1 : -1));
+
+  const indicator = document.getElementById("hitomi-page-indicator");
+  if (indicator) {
+    indicator.hidden = false;
+    indicator.textContent = dual && pageIndexes.length === 2
+      ? `${index + 1}-${index + 2} / ${images.length}`
+      : `${index + 1} / ${images.length}`;
+  }
+}
+
+function hitomiPagerStep(direction) {
+  const { images, index, pagesPerView } = hitomiReaderRuntime.paged;
+  const step = pagesPerView === 2 ? 2 : 1;
+  const next = index + direction * step;
+  // Clamp silently at either end — unlike the viewer/online readers there's no next/prev
+  // work to fall through to here (a hitomi "gallery" isn't part of an ordered series).
+  if (next < 0 || next >= images.length) return;
+  hitomiReaderRuntime.paged.index = pagesPerView === 2 ? alignToPairStart(next) : next;
+  renderHitomiPagedImage();
+}
+
+/* -- 공통: 페이지 점프 · 키보드 -- */
+
+function jumpToHitomiPage() {
+  const input = document.getElementById("hitomi-reader-jump-input");
+  const n = Number(input.value);
+  if (!n || n < 1) return;
+
+  if (hitomiReaderRuntime.viewMode === "paged") {
+    if (n > hitomiReaderRuntime.paged.images.length) return;
+    let idx = n - 1;
+    if (hitomiReaderRuntime.paged.pagesPerView === 2) idx = alignToPairStart(idx);
+    hitomiReaderRuntime.paged.index = idx;
+    renderHitomiPagedImage();
+    return;
+  }
+
+  const target = document.querySelector(`#hitomi-reader-strip img[data-page-index="${n}"]`);
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.addEventListener("keydown", (e) => {
+  if (hitomiState.view !== "gallery" || panelHitomi.hidden) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+  if (key === "f") {
+    e.preventDefault();
+    toggleImmersive();
+    return;
+  }
+  if (key === "l") {
+    e.preventDefault();
+    hitomiReloadCurrentList();
+    return;
+  }
+
+  if (hitomiReaderRuntime.viewMode === "paged") {
+    if (key === "ArrowRight" || key === " " || key === "d") {
+      e.preventDefault();
+      hitomiPagerStep(hitomiReaderRuntime.direction === "ltr" ? 1 : -1);
+    } else if (key === "ArrowLeft" || key === "a") {
+      e.preventDefault();
+      hitomiPagerStep(hitomiReaderRuntime.direction === "ltr" ? -1 : 1);
+    } else if (key === "Home") {
+      e.preventDefault();
+      hitomiReaderRuntime.paged.index = 0;
+      renderHitomiPagedImage();
+    } else if (key === "End") {
+      e.preventDefault();
+      const lastIdx = hitomiReaderRuntime.paged.images.length - 1;
+      hitomiReaderRuntime.paged.index = hitomiReaderRuntime.paged.pagesPerView === 2 ? alignToPairStart(lastIdx) : lastIdx;
+      renderHitomiPagedImage();
+    }
+    return;
+  }
+
+  if (key === " " || key === "PageDown" || key === "ArrowDown" || key === "s") {
+    e.preventDefault();
+    window.scrollBy({ top: window.innerHeight * 0.9, behavior: "smooth" });
+  } else if (key === "PageUp" || key === "ArrowUp" || key === "w") {
+    e.preventDefault();
+    window.scrollBy({ top: -window.innerHeight * 0.9, behavior: "smooth" });
+  } else if (key === "Home") {
+    e.preventDefault();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } else if (key === "End") {
+    e.preventDefault();
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  }
+});
+
+function hitomiDownloadTitle(data) {
+  const names = (data.artists || []).map((a) => a.name).filter(Boolean).join(", ");
+  return names ? `[${names}] ${data.title}` : data.title;
+}
+
+async function startHitomiDownload(data) {
+  const statusEl = document.getElementById("hitomi-download-status");
+  statusEl.textContent = "다운로드 시작하는 중...";
+
+  const payload = {
+    site_url: "https://hitomi.la",
+    toon_id: data.id,
+    title: hitomiDownloadTitle(data),
+    start_page: 1,
+    end_page: 1,
+    separate_folders: false,
+    make_zip: true,
+    source: "hitomi",
+    list_prefix: null,
+  };
+
+  try {
+    const resp = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `요청 실패 (${resp.status})`);
+    }
+    statusEl.textContent = '다운로드 작업이 시작됐습니다 — "다운로드" 탭에서 진행 상황을 확인하세요.';
+    refreshJobs();
+  } catch (err) {
+    statusEl.textContent = `다운로드 시작 실패: ${err.message}`;
+  }
+}
+
+/* ---- hitomi 딥링크 — Ctrl/가운데 클릭으로 새 탭을 열었을 때(hitomiGalleryUrl/
+   hitomiArtistUrl로 만든 주소) 그 화면으로 바로 진입한다. hitomi 탭에만 있는
+   URL 상태라, 다른 탭 로직에는 영향이 없다. 이 파일 끝에 둔 이유: 필요한
+   모든 함수/상태(activateTab, showHitomiList, openHitomiGallery, hitomiState
+   등)가 위에서 이미 다 정의된 뒤에 실행돼야 하기 때문(스크립트가 위에서
+   아래로 순서대로 실행되므로). ---- */
+(function applyHitomiDeepLink() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("tab") !== "hitomi") return;
+
+  hitomiLoadedOnce = true; // activateTab의 기본 showHitomiList() 호출을 막는다
+  activateTab("hitomi");
+
+  const view = params.get("view");
+  if (view === "gallery" && params.get("id")) {
+    openHitomiGallery(Number(params.get("id")));
+  } else if (view === "list" && params.get("artist")) {
+    showHitomiList(params.get("artist"), params.get("artistName"));
+  } else {
+    showHitomiList();
+  }
+})();

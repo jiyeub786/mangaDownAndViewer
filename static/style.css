@@ -230,6 +230,41 @@ a:hover { text-decoration: underline; }
   color: var(--muted);
 }
 
+/* 다운로드 범위(페이지 범위 / 회차 선택) */
+.range-mode { display: flex; gap: var(--sp-md); }
+.range-mode .checkbox-row { display: flex; margin-bottom: 0; font-size: 13px; color: var(--body); }
+
+.episode-select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-xs); }
+.field .episode-select-bar .hint { display: inline; margin-top: 0; }
+
+.episode-list {
+  margin-top: var(--sp-xs);
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.episode-list:empty { display: none; }
+
+.field .episode-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  margin: 0;
+  padding: 6px var(--sp-sm);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 13px;
+  color: var(--body);
+  cursor: pointer;
+  user-select: none;
+}
+.field .episode-item:last-child { border-bottom: none; }
+.field .episode-item:hover { background: var(--surface-elevated); }
+.episode-item input { width: 16px; height: 16px; accent-color: var(--primary); flex-shrink: 0; }
+.episode-num { color: var(--muted); min-width: 32px; }
+.episode-title { flex: 1; overflow-wrap: anywhere; }
+.episode-date { color: var(--muted); font-size: 11px; }
+
 input[type="text"],
 input[type="number"],
 input[type="url"] {
@@ -409,6 +444,20 @@ footer {
 .breadcrumb .crumb.current:hover { text-decoration: none; }
 .breadcrumb .sep { margin: 0 6px; color: var(--hairline); }
 
+/* inline text-styled button, for clickable names inside a line of prose (e.g. hitomi's
+   clickable artist name) where a full .btn would look out of place */
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn:hover { color: var(--primary-active); }
+
 .viewer-controls {
   display: flex;
   gap: var(--sp-sm);
@@ -433,8 +482,39 @@ footer {
 /* ---- viewer: library grid ---- */
 .lib-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(5, 1fr);
   gap: var(--sp-md);
+}
+
+/* hitomi 탭 목록·관련작품 — 카드 안에 제목/시리즈/태그/날짜까지 다 들어가서
+   .lib-grid보다 더 넓은 gap을 준다(칼럼 수는 이제 .lib-grid와 동일 — .lib-name의
+   줄바꿈도 이제 기본 규칙이라 hitomi 전용 오버라이드는 더 필요 없음). */
+.hitomi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--sp-lg);
+}
+
+/* hitomi 목록·관련작품 카드의 Group/Type/Language/Series/Characters/Tags/날짜는
+   .lib-count 기본 회색보다 잘 보이게 제목과 같은 색으로. */
+.hitomi-grid .lib-count {
+  color: var(--on-dark);
+}
+
+/* hitomi 탭의 접이식 섹션 — 상세보기 상단의 관련 작품, 목록의 태그 필터 등.
+   기본은 닫힌 상태(<details>에 open 속성 없음)로 공간을 아낀다. */
+.hitomi-collapsible {
+  margin-bottom: var(--sp-lg);
+}
+.hitomi-collapsible summary {
+  cursor: pointer;
+  color: var(--on-dark);
+  font-size: 15px;
+  font-weight: 600;
+  padding: var(--sp-sm) 0;
+}
+.hitomi-collapsible[open] summary {
+  margin-bottom: var(--sp-md);
 }
 
 .lib-card {
@@ -447,6 +527,22 @@ footer {
   transition: border-color 0.15s ease, opacity 0.15s ease;
 }
 .lib-card:hover { border-color: var(--primary); }
+
+/* hitomi 카드 전체를 덮는 실제 <a> — Ctrl/가운데 클릭으로 새 탭 열기가 되게
+   하려고 클릭 핸들러 대신 진짜 링크를 쓴다. 카드 안에 중첩된 작가명 링크·
+   "+N개 더" 토글은 이 오버레이보다 위 z-index를 줘서 따로 클릭되게 한다
+   (앵커 안에 앵커를 중첩할 수 없어 형제 오버레이로 구현). */
+.lib-card-link {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  cursor: pointer;
+}
+.lib-card .link-btn,
+.lib-card [data-tags-toggle] {
+  position: relative;
+  z-index: 2;
+}
 
 .lib-card.read { opacity: 0.55; }
 
@@ -506,9 +602,9 @@ footer {
   font-size: 13px;
   font-weight: 600;
   color: var(--on-dark);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .lib-count {
@@ -516,6 +612,29 @@ footer {
   color: var(--muted);
   margin-top: 2px;
   font-family: var(--font-number);
+}
+
+/* decensored/uncensored 강조(hitomi 제목·태그) */
+.hl-keyword {
+  color: var(--down);
+  font-weight: 700;
+}
+
+/* hitomi 리더 이미지가 502 등으로 실패했을 때(주로 우회 프로그램이 그 순간
+   꺼져 있어서) 자리를 지키면서 재시도할 수 있게 하는 안내 박스. */
+.img-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-sm);
+  width: 100%;
+  background: var(--surface-elevated);
+  color: var(--muted);
+  font-size: 13px;
+  padding: var(--sp-lg);
+  border-radius: var(--r-md);
+  text-align: center;
 }
 
 /* ---- viewer: reader ---- */

@@ -1,14 +1,18 @@
-"""Read-only scanner over the downloads/ directory for the in-browser viewer.
+"""Read-only scanner over the downloads/_folders/ directory for the in-browser viewer.
 
 Two on-disk layouts have to be supported, matching the two modes ``crawler.crawl_toon``
 can produce:
 
-- **폴더형** (``separate_folders=True``): ``downloads/{title}/{episode_folder}/*.jpg``
+- **폴더형** (``separate_folders=True``): ``downloads/_folders/{title}/{episode_folder}/*.jpg``
   Each subdirectory of a title is one episode.
-- **평면형** (``separate_folders=False``): ``downloads/{title}/*.jpg``, filenames like
-  ``001_001.jpg``, ``001_002.jpg``, ``002_001.jpg`` (episode number is baked into the
+- **평면형** (``separate_folders=False``): ``downloads/_folders/{title}/*.jpg``, filenames
+  like ``001_001.jpg``, ``001_002.jpg``, ``002_001.jpg`` (episode number is baked into the
   filename prefix instead of a folder). We regroup those by that numeric prefix so the
   viewer still shows one "episode" per chapter instead of one giant image wall.
+
+The ``download_root`` parameter every function here takes is ``jobs.TITLES_ROOT``
+(``downloads/_folders``), not the top-level ``downloads/`` — that split keeps loose
+per-title folders separate from ``downloads/_zips``.
 """
 from __future__ import annotations
 

@@ -31,6 +31,13 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --reload
 ```
 
+hitomi 탭은 네트워크 환경에 따라 접속이 막혀 있을 수 있습니다 — 안 열리면
+아래를 관리자 권한으로 먼저 실행하세요(우회 프로그램, Windows 전용):
+
+```powershell
+app\goodbyedpi-0.2.2\x86_64\goodbyedpi.exe -5
+```
+
 브라우저에서 `http://127.0.0.1:8000` 접속. API 문서는 `/docs`.
 
 ## 스크린샷
