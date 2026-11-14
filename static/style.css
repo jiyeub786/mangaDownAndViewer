@@ -501,6 +501,112 @@ footer {
   color: var(--on-dark);
 }
 
+/* onejav 탭 — 표지가 가로형이라 4열, 카드 자체는 클릭 대상이 아니다(안의
+   링크·버튼만 클릭). */
+.onejav-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-lg);
+}
+.onejav-grid .lib-count { color: var(--on-dark); }
+.onejav-card { cursor: pointer; }
+/* 카드 전체가 작품 페이지 링크(.lib-card-link, z-index 1) — 배우·키워드 링크와 설명
+   펼치기는 그 위(z-index 2)에서 따로 눌린다. */
+.onejav-card .onejav-desc {
+  position: relative;
+  z-index: 2;
+  cursor: pointer;
+}
+.onejav-cover {
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  background: var(--surface-elevated);
+  object-fit: cover;
+  display: block;
+}
+.onejav-kind {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--r-pill);
+  padding: 0 6px;
+}
+.onejav-desc {
+  font-size: 12px;
+  color: var(--muted-strong);
+  margin-top: var(--sp-xxs);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.onejav-desc.open { white-space: normal; }
+a.onejav-bookmarklet { text-decoration: none; }
+.onejav-guide { line-height: 2.2; }
+.onejav-size { display: inline-flex; align-items: center; gap: var(--sp-xs); }
+.onejav-size input { width: 110px; }
+.onejav-filter {
+  background: var(--surface-card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  padding: var(--sp-md);
+}
+.onejav-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-md);
+  margin-bottom: var(--sp-sm);
+}
+.onejav-filter-label {
+  width: 40px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--on-dark);
+}
+.onejav-filter select {
+  height: 28px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  color: var(--on-dark);
+  font-size: 12px;
+}
+/* 조회 조건 태그 3상태 — 왼쪽 클릭 포함(초록), 오른쪽 클릭 제외(빨강 + 취소선) */
+.onejav-tag { cursor: pointer; user-select: none; }
+.onejav-tag-include { color: var(--up); }
+.onejav-tag-include input { accent-color: var(--up); }
+.onejav-tag-exclude { color: var(--down); text-decoration: line-through; }
+.onejav-tag-exclude input { accent-color: var(--down); }
+.onejav-tag-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: var(--sp-xxs) var(--sp-md);
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: var(--sp-md);
+  padding: var(--sp-sm);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.onejav-notice {
+  margin-bottom: var(--sp-md);
+  padding: var(--sp-sm) var(--sp-md);
+  border: 1px solid var(--up);
+  border-radius: var(--r-lg);
+  color: var(--up);
+  font-size: 13px;
+}
+.onejav-controls select {
+  height: 28px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  color: var(--on-dark);
+  font-size: 12px;
+}
+
 /* hitomi 탭의 접이식 섹션 — 상세보기 상단의 관련 작품, 목록의 태그 필터 등.
    기본은 닫힌 상태(<details>에 open 속성 없음)로 공간을 아낀다. */
 .hitomi-collapsible {

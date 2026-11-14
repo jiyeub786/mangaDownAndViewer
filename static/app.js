@@ -424,6 +424,9 @@ function activateTab(tab) {
   panelViewer.hidden = tab !== "viewer";
   panelOnline.hidden = tab !== "online";
   panelHitomi.hidden = tab !== "hitomi";
+  panelOnejav.hidden = tab !== "onejav";
+  // 수집은 다른 브라우저 탭에서 쌓이므로 들어올 때마다 다시 읽는다.
+  if (tab === "onejav") loadOnejav();
   if (tab === "viewer" && !viewerLoadedOnce) {
     viewerLoadedOnce = true;
     showTitles();
@@ -3003,6 +3006,467 @@ async function startHitomiDownload(data) {
     statusEl.textContent = `다운로드 시작 실패: ${err.message}`;
   }
 }
+
+/* ==================== onejav 탭 ====================
+   사이트를 직접 조회하지 않는다(서버 요청은 Cloudflare가 전부 막음) — 사용자가
+   Onejav 페이지에서 "수집" 북마크를 눌러 보낸 목록(/api/onejav/items)만 읽는다.
+   필터·검색도 전부 서버에 저장된 데이터 기준이다. */
+
+const panelOnejav = document.getElementById("tab-panel-onejav");
+const onejavBody = document.getElementById("onejav-body");
+const onejavState = { date: "", query: "", notice: "" };
+// 표지 크기 = 한 줄에 놓는 카드 수(2~6). 적을수록 표지가 크다.
+const ONEJAV_COLUMNS_KEY = "mangadl_onejav_columns";
+let onejavColumns = Number(loadStringPref(ONEJAV_COLUMNS_KEY, "4", ["2", "3", "4", "5", "6"]));
+// 정렬: "" = 날짜 최신순(기본), "code" = 품번순, "actress" = 배우순 — 다음 진입에도 유지.
+const ONEJAV_SORT_KEY = "mangadl_onejav_sort";
+let onejavSort = loadStringPref(ONEJAV_SORT_KEY, "", ["", "code", "actress"]);
+
+// "수집" 북마크의 본체 — 이 앱이 아니라 onejav.com 페이지 위에서 실행된다.
+// 함수 소스를 통째로 javascript: 주소로 바꿔 쓰므로(onejavBookmarkletHref)
+// ※ 함수 안에는 주석을 넣지 말고, 바깥 변수·함수도 참조하지 말 것.
+// 동작: 며칠치를 모을지 묻고 → 오늘부터 거꾸로 날짜 페이지(/년/월/일)를 하나씩,
+// 각 날짜는 "Next" 링크를 따라 끝 페이지까지 2초 간격으로 가져와 읽고(일수를
+// 비우면 지금 열려 있는 목록만) → 전부 모아 앱으로 폼 전송(그 탭이 앱의 onejav
+// 탭으로 넘어감). 도중에 막히거나(403) 오류가 나면 그때까지 모은 것만 보낸다.
+// fetch 대신 폼을 쓰는 이유는 app/main.py의 ingest_onejav_form 주석 참고.
+function onejavCollector(appUrl) {
+  if (location.hostname !== "onejav.com") {
+    alert("Onejav 페이지(onejav.com)를 연 상태에서 눌러 주세요.");
+    return;
+  }
+  if (window.__mangadlCollecting) return;
+
+  var answer = prompt(
+    "최근 며칠치를 수집할까요? (1~90)\n\n90일치는 30분 안팎 걸립니다. 그동안 이 탭을 닫지 마세요.\n비워 두고 확인을 누르면 지금 열려 있는 목록만 수집합니다.",
+    "30"
+  );
+  if (answer === null) return;
+  var days = Math.min(90, Math.max(0, parseInt(answer, 10) || 0));
+  window.__mangadlCollecting = true;
+
+  var box = document.createElement("div");
+  box.style.cssText =
+    "position:fixed;right:12px;bottom:12px;z-index:2147483647;background:#1e2329;color:#eaecef;" +
+    "border:1px solid #fcd535;border-radius:8px;padding:10px 14px;font:13px/1.5 sans-serif;";
+  document.body.appendChild(box);
+  var say = function (message) {
+    box.textContent = message;
+  };
+  var text = function (el) {
+    return el ? el.textContent.trim() : "";
+  };
+  var dateOf = function (href) {
+    var m = /\/(\d{4})\/(\d{2})\/(\d{2})/.exec(href || "");
+    return m ? m[1] + "-" + m[2] + "-" + m[3] : "";
+  };
+  var parse = function (doc, base) {
+    var abs = function (el, attr) {
+      var value = el && el.getAttribute(attr);
+      return value ? new URL(value, base).href : "";
+    };
+    return Array.prototype.map
+      .call(doc.querySelectorAll("div.card.mb-3"), function (card) {
+        var codeLink = card.querySelector("h5.title a");
+        var dateLink = card.querySelector("p.subtitle a");
+        var names = function (selector) {
+          return Array.prototype.map.call(card.querySelectorAll(selector), text).filter(Boolean);
+        };
+        return {
+          code: text(codeLink),
+          date: dateOf(dateLink && dateLink.getAttribute("href")) || dateOf(new URL(base).pathname),
+          size: text(card.querySelector("h5.title span")),
+          description: text(card.querySelector("p.level")),
+          actresses: names("div.panel a.panel-block"),
+          tags: names("div.tags a.tag"),
+          image_url: abs(card.querySelector("img.image"), "src"),
+          torrent_url: abs(card.querySelector('a[href*="/download/"]'), "href"),
+          page_url: abs(codeLink, "href"),
+        };
+      })
+      .filter(function (item) {
+        return item.code;
+      });
+  };
+  var wait = function (ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, ms);
+    });
+  };
+
+  var items = [];
+  var blocked = false;
+  var fetchDoc = async function (url) {
+    await wait(2000);
+    var resp = await fetch(url, { credentials: "same-origin" });
+    if (resp.status === 403) blocked = true;
+    if (!resp.ok) return null;
+    return new DOMParser().parseFromString(await resp.text(), "text/html");
+  };
+  var collectList = async function (doc, base, label) {
+    var pages = 0;
+    while (doc && pages < 20) {
+      var found = parse(doc, base);
+      if (!found.length) break;
+      items = items.concat(found);
+      pages += 1;
+      say(label + " · 누적 " + items.length + "건");
+      var next = doc.querySelector("a.pagination-next[href]");
+      if (!next) break;
+      var nextUrl = new URL(next.getAttribute("href"), base).href;
+      if (nextUrl === base) break;
+      base = nextUrl;
+      doc = await fetchDoc(base);
+    }
+  };
+
+  (async function () {
+    try {
+      if (days === 0) {
+        await collectList(document, location.href, "지금 목록 수집 중");
+      } else {
+        var day = new Date();
+        for (var i = 0; i < days && !blocked; i++) {
+          var path =
+            "/" + day.getFullYear() + "/" + ("0" + (day.getMonth() + 1)).slice(-2) + "/" + ("0" + day.getDate()).slice(-2);
+          var label = path.slice(1) + " (" + (i + 1) + "/" + days + "일)";
+          say(label + " · 누적 " + items.length + "건");
+          await collectList(await fetchDoc(location.origin + path), location.origin + path, label);
+          day.setDate(day.getDate() - 1);
+        }
+      }
+    } catch (err) {
+      say("도중에 오류 — 지금까지 모은 " + items.length + "건만 보냅니다.");
+    }
+    if (!items.length) {
+      say("수집할 작품 카드를 찾지 못했습니다.");
+      window.__mangadlCollecting = false;
+      return;
+    }
+    say(items.length + "건 수집 — 앱으로 보내는 중…");
+    var form = document.createElement("form");
+    form.method = "post";
+    form.action = appUrl + "/api/onejav/ingest-form";
+    var input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "payload";
+    input.value = JSON.stringify(items);
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+  })().catch(function (err) {
+    say("수집 실패: " + err.message);
+    window.__mangadlCollecting = false;
+  });
+}
+
+function onejavBookmarkletHref() {
+  return "javascript:" + encodeURIComponent(`(${onejavCollector.toString()})(${JSON.stringify(location.origin)});`);
+}
+
+// 조회 조건 — hitomi 탭의 태그 필터와 같은 방식: 체크박스는 pendingFilters만
+// 바꾸고, "설정" 버튼을 눌러야 filters(실제 API에 실리는 값)로 옮겨져 다시 조회한다.
+// renderOnejav가 매번 pendingFilters를 filters로 다시 맞춘다(체크박스 표시 = 적용된 조건).
+function onejavDefaultFilters() {
+  return { kinds: ["jav", "amateur"], tags: [], excludeTags: [], tagMode: "all", hasActress: false, allDates: false };
+}
+function onejavCopyFilters(f) {
+  return { ...f, kinds: [...f.kinds], tags: [...f.tags], excludeTags: [...f.excludeTags] };
+}
+onejavState.filters = onejavDefaultFilters();
+onejavState.pendingFilters = onejavDefaultFilters();
+onejavState.filterPanelOpen = false;
+
+async function loadOnejav() {
+  const f = onejavState.filters;
+  const params = new URLSearchParams({
+    date: onejavState.date,
+    q: onejavState.query,
+    kinds: f.kinds.join(","),
+    tags: f.tags.join("|"),
+    tag_mode: f.tagMode,
+    exclude_tags: f.excludeTags.join("|"),
+    // 서버가 불리언으로 받는 값이라 빈 문자열을 보내면 422가 난다.
+    has_actress: f.hasActress ? "1" : "0",
+    all_dates: f.allDates ? "1" : "0",
+    sort: onejavSort,
+  });
+  try {
+    const resp = await fetch(`/api/onejav/items?${params}`);
+    if (!resp.ok) throw new Error(`요청 실패 (${resp.status})`);
+    renderOnejav(await resp.json());
+  } catch (err) {
+    onejavBody.innerHTML = `<div class="empty-state">불러오지 못했습니다: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function onejavQueryLinks(values) {
+  return values
+    .map((v) => `<a href="#" class="link-btn" data-onejav-q="${escapeAttr(v)}">${escapeHtml(v)}</a>`)
+    .join(", ");
+}
+
+function renderOnejavCard(item) {
+  const cover = item.image_url
+    ? `<img class="onejav-cover" src="${escapeAttr(item.image_url)}" referrerpolicy="no-referrer" loading="lazy" alt="${escapeAttr(item.code)}" />`
+    : `<div class="onejav-cover lib-cover-empty">이미지 없음</div>`;
+  // 카드 전체 = 작품 페이지 새 탭 링크(hitomi 카드와 같은 형제 오버레이 앵커). 토렌트
+  // 주소(item.torrent_url)는 Onejav 페이지에서 출발한 요청에만 파일을 주고 앱 화면에서
+  // 열면 작품 페이지로 돌려보내므로(실측), 받기는 그 페이지의 Download 버튼으로 한다.
+  const cardLink = item.page_url
+    ? `<a class="lib-card-link" href="${escapeAttr(item.page_url)}" target="_blank" rel="noopener" aria-label="${escapeAttr(item.code)} 작품 페이지"></a>`
+    : "";
+  return `
+    <div class="lib-card onejav-card">
+      ${cardLink}
+      ${cover}
+      <div class="lib-meta">
+        <div class="lib-name">${escapeHtml(item.code)} <span class="onejav-kind">${escapeHtml(item.kind)}</span></div>
+        <div class="lib-count">${escapeHtml(item.date)}${item.size ? ` · ${escapeHtml(item.size)}` : ""}</div>
+        ${item.actresses.length ? `<div class="lib-count">배우: ${onejavQueryLinks(item.actresses)}</div>` : ""}
+        ${item.description ? `<div class="onejav-desc" title="눌러서 펼치기/접기">${escapeHtml(item.description)}</div>` : ""}
+        ${item.tags.length ? `<div class="lib-count">키워드: ${onejavQueryLinks(item.tags)}</div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+// 기본값과 다른 조건의 개수 — 접힌 상태에서도 조건이 걸려 있음을 알리는 용도.
+function onejavActiveFilterCount(f) {
+  return (f.kinds.length < 2 ? 1 : 0) + f.tags.length + f.excludeTags.length + (f.hasActress ? 1 : 0) + (f.allDates ? 1 : 0);
+}
+
+function renderOnejavFilterPanel(tagCounts) {
+  const p = onejavState.pendingFilters;
+  const check = (attrs, checked, label) =>
+    `<label class="checkbox-row" style="margin:0;"><input type="checkbox" ${attrs} ${checked ? "checked" : ""} /> ${label}</label>`;
+  const f = onejavState.filters;
+  const activeCount = onejavActiveFilterCount(f);
+  const tagSummary = [f.tags.length ? `포함 ${f.tags.length}` : "", f.excludeTags.length ? `제외 ${f.excludeTags.length}` : ""]
+    .filter(Boolean)
+    .join(" · ");
+  // 태그 체크박스는 3상태(없음/포함/제외) — 상태 표시는 setOnejavTagState가 맡는다.
+  const tagBoxes = tagCounts
+    .map((t) => {
+      const state = p.tags.includes(t.tag) ? "include" : p.excludeTags.includes(t.tag) ? "exclude" : "";
+      return `<label class="checkbox-row onejav-tag${state ? ` onejav-tag-${state}` : ""}" style="margin:0;" data-onejav-tag="${escapeAttr(t.tag)}">
+        <input type="checkbox" ${state ? "checked" : ""} /> ${escapeHtml(t.tag)} <span class="hint">${t.count}</span></label>`;
+    })
+    .join("");
+  const modeOption = (value, label) => `<option value="${value}" ${p.tagMode === value ? "selected" : ""}>${label}</option>`;
+  return `
+    <details class="hitomi-collapsible" id="onejav-filter-details" ${onejavState.filterPanelOpen ? "open" : ""}>
+      <summary>조회 조건${activeCount ? ` (${activeCount}개 적용중${tagSummary ? ` — 태그 ${tagSummary}` : ""})` : ""}</summary>
+      <div class="onejav-filter">
+        <div class="onejav-filter-row">
+          <span class="onejav-filter-label">구분</span>
+          ${check('data-onejav-kind="jav"', p.kinds.includes("jav"), "JAV")}
+          ${check('data-onejav-kind="amateur"', p.kinds.includes("amateur"), "Amateur (FC2)")}
+        </div>
+        <div class="onejav-filter-row">
+          <span class="onejav-filter-label">범위</span>
+          ${check('id="onejav-all-dates"', p.allDates, "수집된 전체 날짜에서 조회 (끄면 선택한 날짜만)")}
+          ${check('id="onejav-has-actress"', p.hasActress, "배우명이 있는 작품만")}
+        </div>
+        <div class="onejav-filter-row">
+          <span class="onejav-filter-label">태그</span>
+          <select id="onejav-tag-mode">
+            ${modeOption("all", "포함 태그를 모두 가진 작품")}
+            ${modeOption("any", "포함 태그 중 하나라도 가진 작품")}
+          </select>
+          <button type="button" class="link-btn" id="onejav-tags-clear">태그 선택 해제</button>
+          <span class="hint">왼쪽 클릭 = 포함(초록) · 오른쪽 클릭 = 제외(빨강, 취소선) · 같은 쪽을 다시 누르면 해제</span>
+        </div>
+        <div class="onejav-tag-list">${tagBoxes || '<span class="hint">수집된 태그가 없습니다.</span>'}</div>
+        <div class="action-row" style="margin-bottom:0;">
+          <button type="button" class="btn btn-primary btn-sm" style="width:auto;" id="onejav-filter-apply">설정</button>
+          <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="onejav-filter-reset">초기화</button>
+          <span class="hint">체크를 바꾼 뒤 "설정"을 눌러야 목록에 반영됩니다.</span>
+        </div>
+      </div>
+    </details>`;
+}
+
+function renderOnejav(data) {
+  // 다시 그릴 때마다 체크박스 표시를 실제 적용된 조건과 맞춘다.
+  onejavState.pendingFilters = onejavCopyFilters(onejavState.filters);
+
+  const guide = `
+    <details class="hitomi-collapsible" ${data.total === 0 ? "open" : ""}>
+      <summary>수집 방법</summary>
+      <div class="hint onejav-guide">
+        ① 오른쪽 버튼을 북마크바로 끌어다 놓기 (1회):
+        <a class="btn btn-secondary btn-sm onejav-bookmarklet" style="width:auto;" href="${escapeAttr(onejavBookmarkletHref())}">Onejav 수집</a><br />
+        ② 브라우저에서 Onejav 페이지(아무 페이지나)를 열기<br />
+        ③ 그 페이지에서 북마크 "Onejav 수집" 클릭 → 며칠치를 모을지 입력(기본 30일, 최대 90일)<br />
+        ④ 날짜별로 차례로 읽은 뒤 이 탭으로 돌아옵니다 — 30일치는 10분 안팎 걸리니 그 탭을 닫지 말고 두세요.<br />
+        ※ 일수를 비우고 확인을 누르면 지금 열려 있는 목록(예: 검색·배우·태그 결과)만 수집합니다.<br />
+        ※ 토렌트는 카드를 눌러 열리는 Onejav 작품 페이지에서 받습니다.
+      </div>
+    </details>`;
+  const notice = onejavState.notice ? `<div class="onejav-notice">${escapeHtml(onejavState.notice)}</div>` : "";
+
+  if (data.total === 0) {
+    onejavBody.innerHTML = notice + guide + '<div class="empty-state">아직 수집된 작품이 없습니다.</div>';
+    return;
+  }
+
+  if (data.date) onejavState.date = data.date;
+  // 날짜 목록은 최신순 — 배열에서 뒤쪽이 이전 날짜다.
+  const idx = data.dates.findIndex((d) => d.date === data.date);
+  const older = idx >= 0 ? data.dates[idx + 1] : null;
+  const newer = idx > 0 ? data.dates[idx - 1] : null;
+
+  const dateBar = onejavState.query
+    ? `<span class="hint">검색: "${escapeHtml(onejavState.query)}" (수집된 전체 날짜)</span>
+       <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="onejav-clear">검색 해제</button>`
+    : onejavState.filters.allDates
+    ? `<span class="hint">수집된 전체 날짜 (${data.dates.length}일)</span>`
+    : `<button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="onejav-older" ${older ? "" : "disabled"}>◀ 이전날</button>
+       <select id="onejav-date">
+         ${data.dates
+           .map(
+             (d) =>
+               `<option value="${escapeAttr(d.date)}" ${d.date === data.date ? "selected" : ""}>${escapeHtml(d.date || "날짜 없음")} (${d.count}건)</option>`
+           )
+           .join("")}
+       </select>
+       <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="onejav-newer" ${newer ? "" : "disabled"}>다음날 ▶</button>`;
+
+  const controls = `
+    <div class="action-row onejav-controls">
+      ${dateBar}
+      <input type="text" id="onejav-search" placeholder="품번·배우·키워드 검색" value="${escapeAttr(onejavState.query)}" style="flex:1; min-width:160px;" />
+      <button type="button" class="btn btn-primary btn-sm" style="width:auto;" id="onejav-search-btn">검색</button>
+      <select id="onejav-sort" title="정렬">
+        <option value="" ${onejavSort === "" ? "selected" : ""}>날짜 최신순</option>
+        <option value="code" ${onejavSort === "code" ? "selected" : ""}>품번순</option>
+        <option value="actress" ${onejavSort === "actress" ? "selected" : ""}>배우순</option>
+      </select>
+      <label class="hint onejav-size">표지 작게
+        <input type="range" id="onejav-size" min="2" max="6" step="1" value="${8 - onejavColumns}" />
+        크게</label>
+      <span class="hint">${data.items.length}건 표시 / 전체 ${data.total}건 수집</span>
+    </div>`;
+
+  const grid = data.items.length
+    ? `<div class="onejav-grid" style="grid-template-columns: repeat(${onejavColumns}, 1fr);">${data.items.map(renderOnejavCard).join("")}</div>`
+    : '<div class="empty-state">조건에 맞는 작품이 없습니다.</div>';
+
+  onejavBody.innerHTML = notice + guide + controls + renderOnejavFilterPanel(data.tags) + grid;
+
+  const go = (changes) => {
+    Object.assign(onejavState, changes);
+    loadOnejav();
+  };
+  const on = (id, event, handler) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(event, handler);
+  };
+  on("onejav-older", "click", () => go({ date: older.date }));
+  on("onejav-newer", "click", () => go({ date: newer.date }));
+  on("onejav-date", "change", (e) => go({ date: e.target.value }));
+  on("onejav-clear", "click", () => go({ query: "" }));
+  on("onejav-search-btn", "click", () => go({ query: document.getElementById("onejav-search").value.trim() }));
+  on("onejav-sort", "change", (e) => {
+    onejavSort = e.target.value;
+    try {
+      localStorage.setItem(ONEJAV_SORT_KEY, onejavSort);
+    } catch (err) {
+      /* 저장 실패 시 이번 화면에만 적용 */
+    }
+    loadOnejav();
+  });
+  // 설명: 기본 1줄 말줄임, 누르면 펼침/접힘(카드 링크보다 위라 페이지 이동 안 함).
+  onejavBody.querySelectorAll(".onejav-desc").forEach((el) => {
+    el.addEventListener("click", () => el.classList.toggle("open"));
+  });
+  on("onejav-size", "input", (e) => {
+    // 슬라이더는 오른쪽이 "크게"라 열 수와 방향이 반대다(8 - 값). 목록을 다시
+    // 불러오지 않고 그리드 열 수만 바꾼다.
+    onejavColumns = 8 - Number(e.target.value);
+    const gridEl = onejavBody.querySelector(".onejav-grid");
+    if (gridEl) gridEl.style.gridTemplateColumns = `repeat(${onejavColumns}, 1fr)`;
+    try {
+      localStorage.setItem(ONEJAV_COLUMNS_KEY, String(onejavColumns));
+    } catch (err) {
+      /* 저장 실패 시 이번 화면에만 적용 */
+    }
+  });
+  on("onejav-search", "keydown", (e) => {
+    if (e.key === "Enter") go({ query: e.target.value.trim() });
+  });
+  onejavBody.querySelectorAll("[data-onejav-q]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      go({ query: el.getAttribute("data-onejav-q") });
+    });
+  });
+
+  /* ---- 조회 조건 패널: 체크박스는 pendingFilters만 바꾼다 ---- */
+  const pending = onejavState.pendingFilters;
+  const toggleIn = (list, value, checked) => {
+    const i = list.indexOf(value);
+    if (checked && i < 0) list.push(value);
+    if (!checked && i >= 0) list.splice(i, 1);
+  };
+  on("onejav-filter-details", "toggle", (e) => {
+    onejavState.filterPanelOpen = e.target.open;
+  });
+  onejavBody.querySelectorAll("[data-onejav-kind]").forEach((el) => {
+    el.addEventListener("change", () => toggleIn(pending.kinds, el.getAttribute("data-onejav-kind"), el.checked));
+  });
+  // 태그: 왼쪽 클릭 = 포함, 오른쪽 클릭 = 제외, 같은 쪽 다시 = 해제. 체크박스 기본 토글은
+  // 막고(preventDefault) 상태를 직접 정한다 — 오른쪽 클릭은 브라우저 메뉴도 막는다.
+  const setOnejavTagState = (label, state) => {
+    const tag = label.getAttribute("data-onejav-tag");
+    toggleIn(pending.tags, tag, state === "include");
+    toggleIn(pending.excludeTags, tag, state === "exclude");
+    label.querySelector("input").checked = state !== "";
+    label.classList.toggle("onejav-tag-include", state === "include");
+    label.classList.toggle("onejav-tag-exclude", state === "exclude");
+  };
+  const tagStateOf = (label) =>
+    label.classList.contains("onejav-tag-include") ? "include" : label.classList.contains("onejav-tag-exclude") ? "exclude" : "";
+  onejavBody.querySelectorAll("label[data-onejav-tag]").forEach((label) => {
+    label.addEventListener("click", (e) => {
+      e.preventDefault();
+      setOnejavTagState(label, tagStateOf(label) === "include" ? "" : "include");
+    });
+    label.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      setOnejavTagState(label, tagStateOf(label) === "exclude" ? "" : "exclude");
+    });
+  });
+  on("onejav-all-dates", "change", (e) => {
+    pending.allDates = e.target.checked;
+  });
+  on("onejav-has-actress", "change", (e) => {
+    pending.hasActress = e.target.checked;
+  });
+  on("onejav-tag-mode", "change", (e) => {
+    pending.tagMode = e.target.value;
+  });
+  on("onejav-tags-clear", "click", () => {
+    onejavBody.querySelectorAll("label[data-onejav-tag]").forEach((label) => setOnejavTagState(label, ""));
+  });
+  on("onejav-filter-apply", "click", () => go({ filters: onejavCopyFilters(pending) }));
+  on("onejav-filter-reset", "click", () => go({ filters: onejavDefaultFilters() }));
+}
+
+// 수집 북마크가 폼 전송을 마치면 서버가 /?tab=onejav&received=N&added=M 으로
+// 돌려보낸다 — 그 주소로 들어왔을 때 onejav 탭을 바로 열고 결과를 한 줄 알린다.
+// (파일 끝쪽에 둔 이유는 아래 hitomi 딥링크와 같다.)
+(function applyOnejavDeepLink() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("tab") !== "onejav") return;
+  if (params.get("received")) {
+    onejavState.notice = `${params.get("received")}건 수집 완료 (새 항목 ${params.get("added") || 0}건)`;
+    // 새로고침할 때 같은 알림이 다시 뜨지 않게 주소에서 결과 값을 지운다.
+    history.replaceState(null, "", "/?tab=onejav");
+  }
+  activateTab("onejav");
+})();
 
 /* ---- hitomi 딥링크 — Ctrl/가운데 클릭으로 새 탭을 열었을 때(hitomiGalleryUrl/
    hitomiArtistUrl로 만든 주소) 그 화면으로 바로 진입한다. hitomi 탭에만 있는

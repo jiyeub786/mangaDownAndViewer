@@ -1,14 +1,15 @@
+import json
 import os
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import requests
 
 from . import jobs, library, online
-from . import crawler, hitomi
+from . import crawler, hitomi, onejav
 from .crawler import sanitize_folder_name
 from .models import CrawlJobRequest, JobStatus
 
@@ -16,6 +17,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 TITLES_ROOT = jobs.TITLES_ROOT
 os.makedirs(TITLES_ROOT, exist_ok=True)
+ONEJAV_STORE = os.path.join(jobs.DOWNLOAD_ROOT, "_onejav", "items.json")
 
 app = FastAPI(title="온라인만화뷰어", description="만화 사이트 이미지 크롤러 웹 앱")
 
@@ -270,6 +272,53 @@ def hitomi_thumb_proxy(url: str):
     except requests.RequestException as exc:
         raise HTTPException(502, f"썸네일 요청에 실패했습니다: {exc}")
     return StreamingResponse(resp.iter_content(65536), media_type=resp.headers.get("content-type", "image/webp"))
+
+
+@app.post("/api/onejav/ingest-form")
+async def ingest_onejav_form(request: Request):
+    # The collector bookmarklet runs on the onejav.com page, where a fetch() to
+    # this app would hit CORS / local-network restrictions — so it submits a plain
+    # HTML form instead (a top-level navigation, exempt from those). The body is
+    # parsed by hand to avoid adding python-multipart just for one form field.
+    body = (await request.body()).decode("utf-8")
+    payload = parse_qs(body).get("payload", [""])[0]
+    try:
+        items = [onejav.OnejavItem(**item) for item in json.loads(payload)]
+    except (ValueError, TypeError):
+        raise HTTPException(400, "수집 데이터 형식이 올바르지 않습니다.")
+    result = onejav.ingest(ONEJAV_STORE, items)
+    # 303: 브라우저가 이 POST 결과 화면 대신 앱의 onejav 탭으로 넘어가게 한다.
+    return RedirectResponse(f"/?tab=onejav&received={result['received']}&added={result['added']}", status_code=303)
+
+
+@app.get("/api/onejav/items")
+def get_onejav_items(
+    date: str = "",
+    q: str = "",
+    kinds: str | None = None,
+    tags: str = "",
+    tag_mode: str = "all",
+    exclude_tags: str = "",
+    has_actress: bool = False,
+    all_dates: bool = False,
+    sort: str = "",
+) -> dict:
+    # sort: "" = 날짜 최신순 → 품번, "code" = 품번순, "actress" = 배우순.
+    # kinds: "jav,amateur" (없으면 구분 조건 없음, 빈 문자열이면 둘 다 해제 = 0건).
+    # tags(포함)·exclude_tags(제외): "|"로 구분 — 태그 이름에 쉼표·공백이 들어갈 수 있어서.
+    # tag_mode: 포함 태그끼리 "all"(모두) / "any"(하나라도).
+    return onejav.query(
+        ONEJAV_STORE,
+        date=date,
+        q=q,
+        kinds=None if kinds is None else [k for k in kinds.split(",") if k],
+        tags=[t for t in tags.split("|") if t],
+        tag_mode=tag_mode,
+        exclude_tags=[t for t in exclude_tags.split("|") if t],
+        has_actress=has_actress,
+        all_dates=all_dates,
+        sort=sort,
+    )
 
 
 @app.get("/api/library")
