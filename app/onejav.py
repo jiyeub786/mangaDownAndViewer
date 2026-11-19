@@ -84,6 +84,8 @@ def query(
     has_actress: bool = False,
     all_dates: bool = False,
     sort: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> dict:
     with _LOCK:
         store = _load(store_path)
@@ -102,7 +104,26 @@ def query(
     tag_list = [{"tag": t, "count": c} for t, c in sorted(tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
 
     q = q.strip().lower()
-    if q:
+    ranged = bool(date_from or date_to)
+    if ranged:
+        # 날짜 범위(양끝 포함, YYYY-MM-DD 문자열 비교) — 단일 날짜 선택·전체 날짜 설정보다 우선.
+        date = ""
+        items = [
+            i
+            for i in items
+            if i["date"]
+            and (not date_from or i["date"] >= date_from)
+            and (not date_to or i["date"] <= date_to)
+        ]
+        if q:
+            items = [
+                i
+                for i in items
+                if q in i["code"].lower()
+                or any(q in a.lower() for a in i["actresses"])
+                or any(q in t.lower() for t in i["tags"])
+            ]
+    elif q:
         # 검색은 날짜와 무관하게 수집된 전체에서 찾는다.
         date = ""
         items = [

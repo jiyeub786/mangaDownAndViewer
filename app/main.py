@@ -302,7 +302,10 @@ def get_onejav_items(
     has_actress: bool = False,
     all_dates: bool = False,
     sort: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> dict:
+    # date_from·date_to: 날짜 범위(YYYY-MM-DD, 양끝 포함, 한쪽만 줘도 됨) — 있으면 date·all_dates 무시.
     # sort: "" = 날짜 최신순 → 품번, "code" = 품번순, "actress" = 배우순.
     # kinds: "jav,amateur" (없으면 구분 조건 없음, 빈 문자열이면 둘 다 해제 = 0건).
     # tags(포함)·exclude_tags(제외): "|"로 구분 — 태그 이름에 쉼표·공백이 들어갈 수 있어서.
@@ -318,6 +321,8 @@ def get_onejav_items(
         has_actress=has_actress,
         all_dates=all_dates,
         sort=sort,
+        date_from=date_from,
+        date_to=date_to,
     )
 
 

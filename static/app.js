@@ -3168,7 +3168,7 @@ function onejavBookmarkletHref() {
 // 바꾸고, "설정" 버튼을 눌러야 filters(실제 API에 실리는 값)로 옮겨져 다시 조회한다.
 // renderOnejav가 매번 pendingFilters를 filters로 다시 맞춘다(체크박스 표시 = 적용된 조건).
 function onejavDefaultFilters() {
-  return { kinds: ["jav", "amateur"], tags: [], excludeTags: [], tagMode: "all", hasActress: false, allDates: false };
+  return { kinds: ["jav", "amateur"], tags: [], excludeTags: [], tagMode: "all", hasActress: false, allDates: false, dateFrom: "", dateTo: "" };
 }
 function onejavCopyFilters(f) {
   return { ...f, kinds: [...f.kinds], tags: [...f.tags], excludeTags: [...f.excludeTags] };
@@ -3190,6 +3190,8 @@ async function loadOnejav() {
     has_actress: f.hasActress ? "1" : "0",
     all_dates: f.allDates ? "1" : "0",
     sort: onejavSort,
+    date_from: f.dateFrom,
+    date_to: f.dateTo,
   });
   try {
     const resp = await fetch(`/api/onejav/items?${params}`);
@@ -3233,7 +3235,7 @@ function renderOnejavCard(item) {
 
 // 기본값과 다른 조건의 개수 — 접힌 상태에서도 조건이 걸려 있음을 알리는 용도.
 function onejavActiveFilterCount(f) {
-  return (f.kinds.length < 2 ? 1 : 0) + f.tags.length + f.excludeTags.length + (f.hasActress ? 1 : 0) + (f.allDates ? 1 : 0);
+  return (f.kinds.length < 2 ? 1 : 0) + f.tags.length + f.excludeTags.length + (f.hasActress ? 1 : 0) + (f.allDates ? 1 : 0) + (f.dateFrom || f.dateTo ? 1 : 0);
 }
 
 function renderOnejavFilterPanel(tagCounts) {
@@ -3267,6 +3269,13 @@ function renderOnejavFilterPanel(tagCounts) {
           <span class="onejav-filter-label">범위</span>
           ${check('id="onejav-all-dates"', p.allDates, "수집된 전체 날짜에서 조회 (끄면 선택한 날짜만)")}
           ${check('id="onejav-has-actress"', p.hasActress, "배우명이 있는 작품만")}
+        </div>
+        <div class="onejav-filter-row">
+          <span class="onejav-filter-label">날짜 범위</span>
+          <input type="date" id="onejav-date-from" value="${escapeAttr(p.dateFrom)}" /> ~
+          <input type="date" id="onejav-date-to" value="${escapeAttr(p.dateTo)}" />
+          <button type="button" class="link-btn" id="onejav-date-clear">범위 해제</button>
+          <span class="hint">지정하면 날짜 선택·전체 날짜 설정보다 우선합니다 (한쪽만 입력 가능, 검색어와 함께 적용).</span>
         </div>
         <div class="onejav-filter-row">
           <span class="onejav-filter-label">태그</span>
@@ -3317,7 +3326,16 @@ function renderOnejav(data) {
   const older = idx >= 0 ? data.dates[idx + 1] : null;
   const newer = idx > 0 ? data.dates[idx - 1] : null;
 
-  const dateBar = onejavState.query
+  const rf = onejavState.filters;
+  const dateBar = rf.dateFrom || rf.dateTo
+    ? `<span class="hint">날짜 범위: ${escapeHtml(rf.dateFrom || "처음")} ~ ${escapeHtml(rf.dateTo || "최근")}${
+        onejavState.query ? ` · 검색: "${escapeHtml(onejavState.query)}"` : ""
+      }</span>${
+        onejavState.query
+          ? `<button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="onejav-clear">검색 해제</button>`
+          : ""
+      }`
+    : onejavState.query
     ? `<span class="hint">검색: "${escapeHtml(onejavState.query)}" (수집된 전체 날짜)</span>
        <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="onejav-clear">검색 해제</button>`
     : onejavState.filters.allDates
@@ -3440,6 +3458,17 @@ function renderOnejav(data) {
   });
   on("onejav-all-dates", "change", (e) => {
     pending.allDates = e.target.checked;
+  });
+  on("onejav-date-from", "change", (e) => {
+    pending.dateFrom = e.target.value;
+  });
+  on("onejav-date-to", "change", (e) => {
+    pending.dateTo = e.target.value;
+  });
+  on("onejav-date-clear", "click", () => {
+    pending.dateFrom = pending.dateTo = "";
+    document.getElementById("onejav-date-from").value = "";
+    document.getElementById("onejav-date-to").value = "";
   });
   on("onejav-has-actress", "change", (e) => {
     pending.hasActress = e.target.checked;
