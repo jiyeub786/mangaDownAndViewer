@@ -409,6 +409,7 @@ let titleSortMode = "name";
 let episodeSearchQuery = "";
 
 function activateTab(tab) {
+  currentTab = tab;
   tabButtons.forEach((b) => b.classList.toggle("active", b.getAttribute("data-tab") === tab));
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
@@ -439,10 +440,147 @@ function activateTab(tab) {
     hitomiLoadedOnce = true;
     showHitomiList();
   }
+  pushRoute();
 }
 
 tabButtons.forEach((btn) => {
   btn.addEventListener("click", () => activateTab(btn.getAttribute("data-tab")));
+});
+
+/* ---- 브라우저 히스토리 라우터 — 화면 상태를 URL(쿼리스트링)로 표현해서 뒤로가기·
+   앞으로가기·새로고침·링크 공유가 동작하게 한다(docs/claude_plan/browser-history.md).
+   - 화면을 바꾸는 함수(showTitles/openTitle/openEpisode/…)가 상태를 바꾼 직후
+     pushRoute()를 부르면, 현재 상태에서 URL을 만들어 달라졌을 때만 pushState.
+   - 리더 안에서 회차가 바뀌는 건 replaceRoute()(뒤로가기 한 번 = 회차 목록).
+   - 뒤로가기(popstate)·첫 로드는 applyRoute()가 URL을 읽어 기존 화면 함수를
+     다시 호출하는데, 그동안 navSuppress로 push가 중복 기록되지 않게 막는다. ---- */
+
+const APP_TABS = ["download", "viewer", "online", "hitomi", "onejav"];
+let currentTab = "download";
+let navSuppress = 0;
+history.scrollRestoration = "manual";
+
+function currentRoute() {
+  const p = new URLSearchParams({ tab: currentTab });
+  if (currentTab === "viewer") {
+    const s = viewerState;
+    if (s.view !== "titles" && s.title) {
+      p.set("view", s.view);
+      p.set("title", s.title);
+      if (s.view === "reader") p.set("ep", s.activeEpisodeId || s.episodeId || "");
+    }
+  } else if (currentTab === "online") {
+    const s = onlineState;
+    if (s.view !== "search" && s.toonId) {
+      p.set("view", s.view);
+      p.set("source", s.source);
+      p.set("site", s.siteUrl);
+      p.set("id", String(s.toonId));
+      p.set("title", s.seriesTitle);
+      p.set("prefix", s.listPrefix || "");
+      p.set("page", String(s.page));
+      if (s.view === "reader") p.set("ep", s.activeEpisodeId || s.episodeId || "");
+    }
+  } else if (currentTab === "hitomi") {
+    const s = hitomiState;
+    if (s.view === "gallery" && s.galleryId) {
+      p.set("view", "gallery");
+      p.set("id", String(s.galleryId));
+    } else if (s.view === "owned") {
+      p.set("view", "owned");
+    } else {
+      const offset = s.offsetStack[s.offsetStack.length - 1];
+      if (offset > 0) p.set("offset", String(offset));
+      if (s.searchQuery) p.set("q", s.searchQuery);
+      else if (s.artist) {
+        p.set("artist", s.artist);
+        if (s.artistName) p.set("artistName", s.artistName);
+      }
+    }
+  }
+  return `?${p.toString()}`;
+}
+
+function navCommit(replace) {
+  if (navSuppress) return;
+  const url = currentRoute();
+  if (url === (location.search || "?tab=download")) return;
+  // 떠나는 항목에 스크롤 위치를 적어 둔다 — 뒤로가기로 돌아오면 복원.
+  if (!replace) history.replaceState({ scrollY: window.scrollY }, "", location.href);
+  (replace ? history.replaceState : history.pushState).call(history, {}, "", url);
+}
+function pushRoute() {
+  navCommit(false);
+}
+function replaceRoute() {
+  navCommit(true);
+}
+
+// URL → 화면. 기존 화면 함수를 그대로 호출한다(상태 초기화·옵저버 정리·전체화면
+// 해제는 그 함수들이 이미 하고 있다).
+async function applyRoute(params, scrollY = 0) {
+  navSuppress++;
+  try {
+    let tab = params.get("tab") || "download";
+    if (!APP_TABS.includes(tab)) tab = "download";
+    const view = params.get("view") || "";
+    // activateTab의 "처음 들어오면 기본 화면 로드"는 아래에서 직접 하므로 막는다.
+    if (tab === "viewer") viewerLoadedOnce = true;
+    if (tab === "online") onlineLoadedOnce = true;
+    if (tab === "hitomi") hitomiLoadedOnce = true;
+    activateTab(tab);
+
+    if (tab === "viewer") {
+      const title = params.get("title");
+      if (title && (view === "episodes" || view === "reader")) {
+        await openTitle(title);
+        const ep = params.get("ep");
+        if (view === "reader" && ep && viewerState.episodes.some((e) => e.id === ep)) {
+          await openEpisode(title, ep);
+        }
+      } else {
+        await showTitles();
+      }
+    } else if (tab === "online") {
+      const id = Number(params.get("id"));
+      if ((view === "episodes" || view === "reader") && id && params.get("site")) {
+        onlineState.source = params.get("source") === "wfwf" ? "wfwf" : "site2";
+        onlineState.siteUrl = params.get("site");
+        onlineState.listPrefix = params.get("prefix") || "";
+        await openOnlineEpisodes(id, params.get("title") || "", Number(params.get("page")) || 1);
+        const ep = params.get("ep");
+        if (view === "reader" && ep) await openOnlineEpisode(ep);
+      } else {
+        showOnlineSearch();
+      }
+    } else if (tab === "hitomi") {
+      if (view === "gallery" && params.get("id")) {
+        await openHitomiGallery(Number(params.get("id")));
+      } else if (view === "owned") {
+        await showHitomiOwned();
+      } else {
+        hitomiState.searchQuery = params.get("q") || "";
+        hitomiState.artist = hitomiState.searchQuery ? null : params.get("artist");
+        hitomiState.artistName = hitomiState.searchQuery ? null : params.get("artistName");
+        // offsetStack: 목록 URL이 이미 스택에 있으면 거기까지만 남기고, 없으면(새로고침·
+        // 링크로 진입) [0, offset]으로 새로 만든다 → "이전 페이지"는 첫 페이지로 간다.
+        const offset = Number(params.get("offset")) || 0;
+        const at = hitomiState.offsetStack.indexOf(offset);
+        hitomiState.offsetStack =
+          at >= 0 ? hitomiState.offsetStack.slice(0, at + 1) : offset > 0 ? [0, offset] : [0];
+        await loadHitomiListOffset(offset);
+      }
+    }
+    // 리더는 이어 읽던 위치가 의미 없으니 맨 위, 목록류만 떠날 때 위치로 복원.
+    const isReaderView = view === "reader" || view === "gallery";
+    window.scrollTo(0, isReaderView ? 0 : scrollY || 0);
+  } finally {
+    navSuppress--;
+  }
+}
+
+window.addEventListener("popstate", (e) => {
+  applyRoute(new URLSearchParams(location.search), (e.state && e.state.scrollY) || 0);
 });
 
 viewerRefreshBtn.addEventListener("click", () => {
@@ -552,6 +690,7 @@ async function showTitles() {
   viewerState.title = null;
   viewerState.episodeId = null;
   viewerState.activeEpisodeId = null;
+  pushRoute();
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
 
@@ -635,6 +774,7 @@ async function resumeTitle(title) {
   const progress = getTitleProgress(title);
   viewerState.view = "episodes";
   viewerState.title = title;
+  pushRoute();
   renderBreadcrumb();
   viewerControls.hidden = true;
   viewerBody.innerHTML = '<div class="empty-state">불러오는 중...</div>';
@@ -670,6 +810,7 @@ async function openTitle(title) {
   viewerState.title = title;
   viewerState.episodeId = null;
   viewerState.activeEpisodeId = null;
+  pushRoute();
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
 
@@ -798,6 +939,7 @@ async function openEpisode(title, episodeId, opts = {}) {
   viewerState.episodeId = episodeId;
   viewerState.activeEpisodeId = episodeId;
   viewerState.loadedIds = [];
+  pushRoute();
   viewerControls.hidden = true;
   renderBreadcrumb();
   renderReaderShell(title);
@@ -959,6 +1101,7 @@ function updateReaderChrome(title) {
     }
     titleEl.textContent = text;
   }
+  replaceRoute(); // 리더 안에서 회차가 바뀌면 URL의 ep만 교체(히스토리는 안 쌓음)
 
   const idx = viewerState.episodes.findIndex((e) => e.id === activeId);
   const prevEp = idx > 0 ? viewerState.episodes[idx - 1] : null;
@@ -1512,6 +1655,7 @@ function showOnlineSearch() {
   onlineState.episodeId = null;
   onlineState.activeEpisodeId = null;
   onlineState.listPrefix = "";
+  pushRoute();
   teardownOnlineReaderObservers();
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
@@ -1634,6 +1778,7 @@ async function openOnlineEpisodes(toonId, title, page) {
   onlineState.page = page;
   onlineState.episodeId = null;
   onlineState.activeEpisodeId = null;
+  pushRoute();
   teardownOnlineReaderObservers();
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
@@ -1719,6 +1864,7 @@ async function openOnlineEpisode(wrId, opts = {}) {
   onlineState.episodeId = wrId;
   onlineState.activeEpisodeId = wrId;
   onlineState.loadedIds = [];
+  pushRoute();
   renderOnlineBreadcrumb();
   renderOnlineReaderShell();
 
@@ -1851,6 +1997,7 @@ function updateOnlineReaderChrome() {
     const epLabel = activeEp ? `${activeEp.title}${activeEp.date ? ` (${activeEp.date})` : ""}` : activeId;
     titleEl.textContent = `${onlineState.seriesTitle} · ${epLabel}`;
   }
+  replaceRoute(); // 리더 안에서 회차가 바뀌면 URL의 ep만 교체
 
   // Newest-first listing: "다음 화" (chronologically forward) sits at a lower index,
   // "이전 화" (chronologically backward) sits at a higher index.
@@ -2252,6 +2399,7 @@ const hitomiState = {
   pendingExcludeTags: [],
   filterPanelOpen: false,
   galleryData: null,
+  galleryId: null, // 열려 있는 상세 갤러리 ID — 브라우저 히스토리 URL(currentRoute)용
   // Title/tag text search (여러 단어 = AND) — 작가 필터와는 배타적으로 동작
   // (검색을 시작하면 작가 필터를 비우고, 작가를 고르면 검색어를 비운다).
   searchQuery: "",
@@ -2271,6 +2419,7 @@ function hitomiArtistUrl(slug, name) {
 
 async function loadHitomiListOffset(offset) {
   hitomiState.view = "list";
+  pushRoute();
   teardownHitomiReaderObservers();
   exitFullscreenIfActive();
   document.body.classList.remove("immersive");
@@ -2310,6 +2459,38 @@ function showHitomiList(artist = null, artistName = null) {
   hitomiState.searchQuery = "";
   hitomiState.offsetStack = [0];
   return loadHitomiListOffset(0);
+}
+
+// 보유 목록 화면 — 작가별로 접어 둔 작품 목록(GET /api/owned). "← 목록"으로 복귀.
+async function showHitomiOwned() {
+  hitomiState.view = "owned";
+  pushRoute();
+  hitomiBody.innerHTML = '<div class="empty-state">불러오는 중...</div>';
+  try {
+    const resp = await fetch("/api/owned");
+    if (!resp.ok) throw new Error(`요청 실패 (${resp.status})`);
+    const data = await resp.json();
+    const back = `<div class="action-row">
+      <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-owned-back">← 목록</button>
+      <span class="hint">보유 ${data.total}건 · 작가 ${data.artists.length}명</span>
+    </div>`;
+    const body = !data.exists
+      ? '<div class="empty-state">보유 목록이 없습니다. 초기 DB는 <code>python -m app.owned "폴더"</code>로 만듭니다.</div>'
+      : data.artists
+          .map(
+            (g) => `<details class="hitomi-collapsible">
+              <summary>${escapeHtml(g.artist)} (${g.works.length})</summary>
+              <ul class="owned-works">${g.works
+                .map((w) => `<li>${escapeHtml(w.title)}${w.id ? ` <span class="hint">#${w.id}</span>` : ""}</li>`)
+                .join("")}</ul>
+            </details>`
+          )
+          .join("");
+    hitomiBody.innerHTML = back + body;
+    document.getElementById("hitomi-owned-back").addEventListener("click", () => hitomiReloadCurrentList());
+  } catch (err) {
+    hitomiBody.innerHTML = `<div class="empty-state">불러오지 못했습니다: ${escapeHtml(err.message)}</div>`;
+  }
 }
 
 // Starts a fresh title/tag search — clears the artist filter (mutually exclusive).
@@ -2385,6 +2566,7 @@ function renderHitomiList(items) {
     <div class="action-row">
       <input type="text" id="hitomi-search-input" placeholder="작품명/태그 검색 (여러 단어 = AND, 한국어 작품만)" value="${escapeAttr(hitomiState.searchQuery)}" style="flex:1; min-width:200px;" />
       <button type="button" class="btn btn-primary btn-sm" style="width:auto;" id="hitomi-search-btn">검색</button>
+      <button type="button" class="btn btn-secondary btn-sm" style="width:auto;" id="hitomi-owned-btn">보유 목록</button>
     </div>`;
 
   const modeBar = hitomiState.searchQuery
@@ -2430,6 +2612,7 @@ function renderHitomiList(items) {
   document.getElementById("hitomi-search-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") runHitomiSearch(e.target.value);
   });
+  document.getElementById("hitomi-owned-btn").addEventListener("click", showHitomiOwned);
   document.getElementById("hitomi-filter-details").addEventListener("toggle", (e) => {
     hitomiState.filterPanelOpen = e.target.open;
   });
@@ -2457,6 +2640,8 @@ function hitomiArtistLinksHtml(artists) {
         ? `<a href="${escapeAttr(hitomiArtistUrl(a.slug, a.name))}" class="link-btn" data-open-artist="${escapeAttr(a.slug)}" data-open-artist-name="${escapeAttr(a.name)}">${escapeHtml(a.name)}</a>`
         : escapeHtml(a.name)
     )
+    // 같은 작가의 작품을 이미 갖고 있으면 개수 표기(작가명 일치 기준)
+    .map((html, i) => (artists[i].owned_count ? `${html}<span class="owned-count">(보유 ${artists[i].owned_count})</span>` : html))
     .join(", ");
 }
 
@@ -2564,7 +2749,7 @@ function renderHitomiCard(item) {
       <a class="lib-card-link" href="${escapeAttr(hitomiGalleryUrl(item.id))}" data-open-gallery="${item.id}" aria-label="열기"></a>
       ${cover}
       <div class="lib-meta">
-        <div class="lib-name">${hitomiTitleLine(item.title, item.artists)}</div>
+        <div class="lib-name">${item.owned ? '<span class="owned-badge">보유</span> ' : ""}${hitomiTitleLine(item.title, item.artists)}</div>
         ${fieldsHtml}
         <div class="lib-count">${escapeHtml(item.date)}</div>
       </div>
@@ -2574,6 +2759,8 @@ function renderHitomiCard(item) {
 
 async function openHitomiGallery(galleryId) {
   hitomiState.view = "gallery";
+  hitomiState.galleryId = galleryId;
+  pushRoute();
   teardownHitomiReaderObservers();
   hitomiBody.innerHTML = '<div class="empty-state">불러오는 중...</div>';
   window.scrollTo({ top: 0 });
@@ -3494,28 +3681,12 @@ function renderOnejav(data) {
     // 새로고침할 때 같은 알림이 다시 뜨지 않게 주소에서 결과 값을 지운다.
     history.replaceState(null, "", "/?tab=onejav");
   }
-  activateTab("onejav");
 })();
 
-/* ---- hitomi 딥링크 — Ctrl/가운데 클릭으로 새 탭을 열었을 때(hitomiGalleryUrl/
-   hitomiArtistUrl로 만든 주소) 그 화면으로 바로 진입한다. hitomi 탭에만 있는
-   URL 상태라, 다른 탭 로직에는 영향이 없다. 이 파일 끝에 둔 이유: 필요한
-   모든 함수/상태(activateTab, showHitomiList, openHitomiGallery, hitomiState
-   등)가 위에서 이미 다 정의된 뒤에 실행돼야 하기 때문(스크립트가 위에서
-   아래로 순서대로 실행되므로). ---- */
-(function applyHitomiDeepLink() {
-  const params = new URLSearchParams(location.search);
-  if (params.get("tab") !== "hitomi") return;
-
-  hitomiLoadedOnce = true; // activateTab의 기본 showHitomiList() 호출을 막는다
-  activateTab("hitomi");
-
-  const view = params.get("view");
-  if (view === "gallery" && params.get("id")) {
-    openHitomiGallery(Number(params.get("id")));
-  } else if (view === "list" && params.get("artist")) {
-    showHitomiList(params.get("artist"), params.get("artistName"));
-  } else {
-    showHitomiList();
-  }
-})();
+/* ---- 첫 로드 — 주소의 쿼리스트링(새로고침·Ctrl/가운데 클릭으로 연 새 탭·공유 링크·
+   onejav 수집 복귀)을 그 화면으로 복원한다. 이 파일 끝에 둔 이유: 필요한 모든
+   함수/상태가 위에서 이미 다 정의된 뒤에 실행돼야 하기 때문(스크립트가 위에서
+   아래로 순서대로 실행되므로). tab 파라미터가 없으면(그냥 `/`) 기본 화면 그대로. ---- */
+if (new URLSearchParams(location.search).get("tab")) {
+  applyRoute(new URLSearchParams(location.search));
+}

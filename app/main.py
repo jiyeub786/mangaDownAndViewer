@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 import requests
 
 from . import jobs, library, online
-from . import crawler, hitomi, onejav
+from . import crawler, hitomi, onejav, owned
 from .crawler import sanitize_folder_name
 from .models import CrawlJobRequest, JobStatus
 
@@ -165,6 +165,7 @@ def search_titles_wfwf(site_url: str, query: str) -> list[dict]:
 
 
 def _hitomi_item_dict(item: hitomi.GalleryListItem) -> dict:
+    owned_ids, owned_counts = owned.index()
     # hitomi's thumbnail CDN hotlink-blocks a bare <img src> the same way the
     # full-image CDN does (confirmed: 404s without a hitomi.la Referer, which the
     # browser never sends for our cross-origin img tags) — proxy it like images.
@@ -179,12 +180,22 @@ def _hitomi_item_dict(item: hitomi.GalleryListItem) -> dict:
         "tags": item.tags,
         "date": item.date,
         "thumbnail_url": thumbnail_url,
-        "artists": [{"name": a.name, "slug": a.slug} for a in item.artists],
+        "artists": [
+            {"name": a.name, "slug": a.slug, "owned_count": owned_counts.get(owned.norm_artist(a.name), 0)}
+            for a in item.artists
+        ],
+        "owned": item.id in owned_ids,
         "language": item.language,
         "group": item.group,
         "characters": item.characters,
         "page_count": item.page_count,
     }
+
+
+@app.get("/api/owned")
+def get_owned() -> dict:
+    groups = owned.grouped()
+    return {"exists": owned.db_exists(), "total": len(owned.snapshot()), "artists": groups}
 
 
 @app.get("/api/hitomi/list")

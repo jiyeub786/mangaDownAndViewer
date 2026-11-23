@@ -9,3 +9,4 @@ docs/
 cwraling_download_manga_img_site.py
 cwraling_download_manga_img_site2.py
 app/goodbyedpi-0.2.2/
+.claude/settings.local.json

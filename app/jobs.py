@@ -13,7 +13,7 @@ import time
 import uuid
 from typing import Dict, Optional
 
-from . import crawler, hitomi
+from . import crawler, hitomi, owned
 from .models import CrawlJobRequest, JobStatus
 
 DOWNLOAD_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "downloads")
@@ -197,6 +197,10 @@ def run_job(job_id: str) -> None:
                     zip_path = os.path.join(DOWNLOAD_ROOT, "_zips", f"{crawler.sanitize_folder_name(job.request.title)}.zip")
                     job.zip_path = crawler.zip_directory(source_dir, zip_path, log=job.log)
                 job.status = "completed"
+                if job.request.source == "hitomi":
+                    parsed = owned.parse_name(job.request.title)  # "[작가] 작품명" → 작품명만
+                    if owned.add(job.request.toon_id, result.artists, parsed["title"] if parsed else job.request.title):
+                        job.log("보유 목록에 추가했습니다.")
                 job.log(
                     f"완료: 회차 {job.episodes_processed}개, 이미지 {job.images_downloaded}개 성공"
                     f"{f', {job.images_failed}개 실패' if job.images_failed else ''}"

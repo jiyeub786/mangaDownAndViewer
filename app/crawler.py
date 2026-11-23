@@ -60,6 +60,8 @@ class CrawlResult:
     # crawl_selected_episodes only: folders/files of those partial episodes, so a
     # failed selected-episode job can delete just them, not the whole title folder.
     partial_paths: List[str] = field(default_factory=list)
+    # hitomi only: 작가명 목록 — jobs.py가 보유 DB(app/owned.py)에 추가할 때 쓴다.
+    artists: List[str] = field(default_factory=list)
 
 
 @dataclass

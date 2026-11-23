@@ -579,7 +579,7 @@ def crawl_gallery(
     base_dir = os.path.join(download_root, crawler.sanitize_folder_name(title))
     os.makedirs(base_dir, exist_ok=True)
 
-    result = crawler.CrawlResult(episode_folders=[base_dir])
+    result = crawler.CrawlResult(episode_folders=[base_dir], artists=[a.name for a in detail.artists])
     log(f"{detail.title} - 이미지 {len(detail.files)}개 다운로드 시작")
 
     downloaded = 0
